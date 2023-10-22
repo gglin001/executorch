@@ -1,6 +1,7 @@
 # https://pytorch.org/executorch/stable/getting-started-setup.html
 # https://pytorch.org/executorch/stable/runtime-build-and-cross-compilation.html
 
+ln -s $PWD $PWD/executorch
 bash install_requirements.sh
 
 # install buck2

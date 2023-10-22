@@ -36,3 +36,4 @@ bundled_program/serialize/scalar_type.fbs
 .~lock.*
 
 core
+executorch
