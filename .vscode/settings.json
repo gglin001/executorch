@@ -1,0 +1,12 @@
+{
+    "cmake.configureSettings": {
+        "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install",
+        "BUCK2": "buck2",
+    },
+    "cmake.buildDirectory": "${workspaceFolder}/cmake-out",
+    "terminal.integrated.env.linux": {
+        // "EXT_PATH": "${workspaceFolder}/build/install/bin",
+    },
+    // "C_Cpp.intelliSenseEngine": "default",
+    // "C_Cpp.intelliSenseCachePath": "${workspaceFolder}/build/.vsc_cpp_cache",
+}
