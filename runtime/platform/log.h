@@ -155,7 +155,7 @@ inline void logf(
       torch::executor::internal::logf(                                        \
           _log_level,                                                         \
           _timestamp,                                                         \
-          __ET_SHORT_FILENAME,                                                \
+          __FILE__,                                                           \
           __ET_FUNCTION,                                                      \
           __ET_LINE,                                                          \
           _format,                                                            \
