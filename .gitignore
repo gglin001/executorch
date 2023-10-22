@@ -34,3 +34,5 @@ bundled_program/serialize/scalar_type.fbs
 *.swp
 *~
 .~lock.*
+
+core

@@ -7,7 +7,7 @@
 
 # Install required python dependencies for developing
 # Dependencies are defined in .pyproject.toml
-pip install .
+pip install -e .
 
 # Install pytorch dependencies
 #
