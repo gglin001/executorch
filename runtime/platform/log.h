@@ -22,7 +22,7 @@
 
 // Set minimum log severity if compiler option is not provided.
 #ifndef ET_MIN_LOG_LEVEL
-#define ET_MIN_LOG_LEVEL Info
+#define ET_MIN_LOG_LEVEL Debug
 #endif // !defined(ET_MIN_LOG_LEVEL)
 
 /*

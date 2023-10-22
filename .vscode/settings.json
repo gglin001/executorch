@@ -2,6 +2,7 @@
     "cmake.configureSettings": {
         "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install",
         "BUCK2": "buck2",
+        // "ET_MIN_LOG_LEVEL": "Debug",
     },
     "cmake.buildDirectory": "${workspaceFolder}/cmake-out",
     "clangd.arguments": [
