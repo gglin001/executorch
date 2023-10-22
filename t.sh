@@ -24,4 +24,8 @@ cargo +nightly-2023-07-10 install --git https://github.com/facebook/buck2.git bu
 buck2 cquery //examples/portable/executor_runner:executor_runner
 
 python3 -m examples.portable.scripts.export --model_name="add"
-buck2 run //examples/portable/executor_runner:executor_runner
+buck2 run //examples/portable/executor_runner:executor_runner -- --model_path add.pte
+
+# test cmake building
+# build with vscode config `.vscode/settings.json`
+./cmake-out/executor_runner --model_path add.pte
