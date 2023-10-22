@@ -15,10 +15,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup install nightly-2023-07-10
 cargo +nightly-2023-07-10 install --git https://github.com/facebook/buck2.git buck2
 
-# setup ~/.bashrc
-export PATH="PATH_TO/executorch/third-party/flatbuffers/cmake-out:${PATH}"
+# append to  ~/.bashrc
+# export PATH="/alleng/repos/executorch/third-party/flatbuffers/cmake-out:${PATH}"
 # . "$HOME/.cargo/env"
-export PATH=$HOME/.cargo/bin:$PATH
+# export PATH=$HOME/.cargo/bin:$PATH
 
 # test env
 buck2 cquery //examples/portable/executor_runner:executor_runner
