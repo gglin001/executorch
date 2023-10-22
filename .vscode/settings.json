@@ -4,6 +4,14 @@
         "BUCK2": "buck2",
     },
     "cmake.buildDirectory": "${workspaceFolder}/cmake-out",
+    "clangd.arguments": [
+        // "-log=verbose",
+        "-pretty",
+        "--background-index",
+        "--enable-config",
+        "--all-scopes-completion",
+        "--compile-commands-dir=${workspaceFolder}/cmake-out"
+    ],
     "terminal.integrated.env.linux": {
         // "EXT_PATH": "${workspaceFolder}/build/install/bin",
     },
