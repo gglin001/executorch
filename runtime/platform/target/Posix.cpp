@@ -146,7 +146,7 @@ void et_pal_emit_log_message(
   // weak implementation of et_pal_emit_log_message.
   fprintf(
       ET_LOG_OUTPUT_FILE,
-      "%c %02u:%02u:%02u.%06lu executorch:%s:%zu] %s\n",
+      "%c %02u:%02u:%02u.%06lu executorch: %s:%zu ] %s\n",
       level,
       hour,
       min,
