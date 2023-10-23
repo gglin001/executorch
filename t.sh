@@ -1,7 +1,15 @@
 # https://pytorch.org/executorch/stable/getting-started-setup.html
 # https://pytorch.org/executorch/stable/runtime-build-and-cross-compilation.html
 
-ln -s $PWD $PWD/executorch
+# ln -s $PWD $PWD/executorch
+mkdir executorch
+ln -s $PWD/backends executorch
+ln -s $PWD/exir executorch
+ln -s $PWD/schema executorch
+ln -s $PWD/sdk executorch
+ln -s $PWD/extension executorch
+ln -s $PWD/bundled_program executorch
+
 bash install_requirements.sh
 
 # install buck2
@@ -29,3 +37,19 @@ buck2 run //examples/portable/executor_runner:executor_runner -- --model_path ad
 # test cmake building
 # build with vscode config `.vscode/settings.json`
 ./cmake-out/executor_runner --model_path add.pte
+
+buck2 run examples/portable/executor_runner:executor_runner -- --model_path ./mv2.pte
+buck2 run --config build.type=debug examples/portable/executor_runner:executor_runner -- --model_path add.pte
+
+# buck2 build --config build.type=debug examples/portable/executor_runner:executor_runner
+
+python3 -m examples.portable.scripts.export_and_delegate
+buck2 run --config build.type=debug examples/portable/executor_runner:executor_runner -- --model_path whole.pte
+
+python3 -m examples.portable.scripts.export
+buck2 run --config build.type=debug examples/portable/executor_runner:executor_runner -- --model_path add.pte
+
+# not work due to torch.dynamo
+python -m debugpy \
+    --listen 5678 --wait-for-client \
+    -m examples.portable.scripts.export_and_delegate

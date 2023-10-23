@@ -8,7 +8,8 @@
 # Install required python dependencies for developing
 # Dependencies are defined in .pyproject.toml
 # TODO: can we use `pip install -e .`
-pip install -e .
+# pip install -e .
+python setup.py develop
 
 # Install pytorch dependencies
 #

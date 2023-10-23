@@ -15,7 +15,16 @@
     ],
     "terminal.integrated.env.linux": {
         // "EXT_PATH": "${workspaceFolder}/build/install/bin",
+        // "EXT_PYTHONPATH": "${workspaceFolder}",
     },
+    "python.analysis.extraPaths": [
+        // "${workspaceFolder}",
+    ],
+    "python.analysis.exclude": [
+        "${workspaceFolder}",
+    ],
+    // "python.analysis.autoImportCompletions": true,
+    // "python.analysis.typeCheckingMode": "basic"
     // "C_Cpp.intelliSenseEngine": "default",
     // "C_Cpp.intelliSenseCachePath": "${workspaceFolder}/build/.vsc_cpp_cache",
 }
