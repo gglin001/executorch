@@ -35,7 +35,8 @@
             "program": "${workspaceFolder}/cmake-out/executor_runner",
             "args": [
                 "--model_path",
-                "add.pte",
+                // "add.pte",
+                "linear.pte",
             ],
             "cwd": "${workspaceFolder}"
         }
