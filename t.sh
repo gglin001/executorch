@@ -2,7 +2,33 @@
 # https://pytorch.org/executorch/stable/runtime-build-and-cross-compilation.html
 
 git submodule init
-git submodule update --recursive --init --depth=1
+# git submodule update --recursive --init --depth=1
+
+# just download torch self, torch has too much submodules
+git submodule update --init --depth=1 third-party/pytorch
+# TODO: write a script
+# normal download
+git submodule update --recursive --init --depth=1 \
+    third-party/flatbuffers \
+    third-party/flatcc \
+    third-party/gflags \
+    third-party/googletest \
+    third-party/prelude \
+    third-party/pybind11
+git submodule update --recursive --init --depth=1 \
+    backends/arm/third-party/ethos-u-core-driver \
+    backends/arm/third-party/serialization_lib \
+    backends/xnnpack/third-party/FP16 \
+    backends/xnnpack/third-party/FXdiv \
+    backends/xnnpack/third-party/XNNPACK \
+    backends/xnnpack/third-party/cpuinfo \
+    backends/xnnpack/third-party/pthreadpool \
+    examples/third-party/fbjni \
+    examples/third-party/llama
+
+# update third-party/prelude
+# or an error will be raised from `third-party/prelude`
+git submodule update --recursive --init --depth=1 --remote third-party/prelude
 
 # ln -s $PWD $PWD/executorch
 mkdir executorch
@@ -11,7 +37,7 @@ ln -s $PWD/exir executorch
 ln -s $PWD/schema executorch
 ln -s $PWD/sdk executorch
 ln -s $PWD/extension executorch
-ln -s $PWD/bundled_program executorch
+ln -s $PWD/examples executorch
 
 bash install_requirements.sh
 
@@ -24,14 +50,13 @@ unzstd buck2.zst
 chmod +x buck2
 # cp buck2 /usr/local/bin/buck2
 cp buck2 ~/.local/bin/buck2
+# #### or built buck2 from source
+# curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# rustup install nightly-2023-07-10
+# cargo +nightly-2023-07-10 install --git https://github.com/facebook/buck2.git buck2
 
-# or built buck2 from source
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup install nightly-2023-07-10
-cargo +nightly-2023-07-10 install --git https://github.com/facebook/buck2.git buck2
-
-# append to  ~/.bashrc
-# export PATH="/alleng/repos/executorch/third-party/flatbuffers/cmake-out:${PATH}"
+# append to ~/.bashrc
+# export PATH="ABS_PATH/executorch/third-party/flatbuffers/cmake-out:${PATH}"
 # . "$HOME/.cargo/env"
 # export PATH=$HOME/.cargo/bin:$PATH
 
