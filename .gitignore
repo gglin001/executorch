@@ -37,3 +37,4 @@ sdk/bundled_program/serialize/scalar_type.fbs
 
 core
 executorch
+.vscode/settings.json
