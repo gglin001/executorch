@@ -1,4 +1,12 @@
 {
+    "terminal.integrated.env.linux": {
+        "EXT_PATH": "${workspaceFolder}/build/install/bin:${workspaceFolder}/third-party/flatbuffers/cmake-out",
+        "EXT_PYTHONPATH": "${workspaceFolder}",
+    },
+    "terminal.integrated.env.osx": {
+        "EXT_PATH": "${workspaceFolder}/build/install/bin:${workspaceFolder}/third-party/flatbuffers/cmake-out",
+        "EXT_PYTHONPATH": "${workspaceFolder}",
+    },
     "cmake.configureSettings": {
         "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install",
         "BUCK2": "buck2",
@@ -13,10 +21,6 @@
         "--all-scopes-completion",
         "--compile-commands-dir=${workspaceFolder}/cmake-out"
     ],
-    "terminal.integrated.env.linux": {
-        // "EXT_PATH": "${workspaceFolder}/build/install/bin",
-        // "EXT_PYTHONPATH": "${workspaceFolder}",
-    },
     "python.analysis.extraPaths": [
         // "${workspaceFolder}",
     ],
