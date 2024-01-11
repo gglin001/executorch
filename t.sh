@@ -13,10 +13,14 @@ ln -s $PWD/bundled_program executorch
 bash install_requirements.sh
 
 # install buck2
-wget https://github.com/facebook/buck2/releases/download/latest/buck2-x86_64-unknown-linux-gnu.zst
-unzstd buck2-x86_64-unknown-linux-gnu.zst
-chmod +x buck2-x86_64-unknown-linux-gnu
-cp buck2-x86_64-unknown-linux-gnu /usr/local/bin/buck2
+# https://github.com/facebook/buck2/releases
+wget https://github.com/facebook/buck2/releases/download/latest/buck2-x86_64-unknown-linux-gnu.zst -O buck2.zst
+wget https://github.com/facebook/buck2/releases/download/latest/buck2-aarch64-unknown-linux-gnu.zst -O buck2.zst
+wget https://github.com/facebook/buck2/releases/download/latest/buck2-aarch64-apple-darwin.zst -O buck2.zst
+unzstd buck2.zst
+chmod +x buck2
+# cp buck2 /usr/local/bin/buck2
+cp buck2 ~/.local/bin/buck2
 
 # or built buck2 from source
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

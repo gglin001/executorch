@@ -22,19 +22,19 @@ python setup.py develop
 NIGHTLY_VERSION=dev20240108
 
 TORCH_VERSION=2.3.0.${NIGHTLY_VERSION}
-pip install --force-reinstall --pre torch=="${TORCH_VERSION}" -i https://download.pytorch.org/whl/nightly/cpu
+pip install --pre torch=="${TORCH_VERSION}" -i https://download.pytorch.org/whl/nightly/cpu
 
 TORCH_VISION_VERSION=0.18.0.${NIGHTLY_VERSION}
-pip install --force-reinstall --pre torchvision=="${TORCH_VISION_VERSION}" -i https://download.pytorch.org/whl/nightly/cpu
+pip install --pre torchvision=="${TORCH_VISION_VERSION}" -i https://download.pytorch.org/whl/nightly/cpu
 
 TORCH_AUDIO_VERSION=2.2.0.${NIGHTLY_VERSION}
-pip install --force-reinstall --pre torchaudio=="${TORCH_AUDIO_VERSION}" -i https://download.pytorch.org/whl/nightly/cpu
+pip install --pre torchaudio=="${TORCH_AUDIO_VERSION}" -i https://download.pytorch.org/whl/nightly/cpu
 
 TIMM_VERSION=0.6.13
 pip install --pre timm==${TIMM_VERSION}
 
 TRANSFORMERS_VERSION=4.34.0
-pip install --force-reinstall --pre transformers==${TRANSFORMERS_VERSION}
+pip install --pre transformers==${TRANSFORMERS_VERSION}
 
 TORCHSR_VERSION=1.0.4
 pip install --pre torchsr==${TORCHSR_VERSION}
