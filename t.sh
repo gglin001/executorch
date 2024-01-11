@@ -1,6 +1,9 @@
 # https://pytorch.org/executorch/stable/getting-started-setup.html
 # https://pytorch.org/executorch/stable/runtime-build-and-cross-compilation.html
 
+git submodule init
+git submodule update --recursive --init --depth=1
+
 # ln -s $PWD $PWD/executorch
 mkdir executorch
 ln -s $PWD/backends executorch
