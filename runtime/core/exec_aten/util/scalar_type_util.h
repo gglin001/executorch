@@ -49,30 +49,6 @@ using string_view = torch::executor::string_view;
 
 namespace torch {
 namespace executor {
-
-#ifdef EXECUTORCH_SELECTIVE_BUILD_DTYPE
-#include <executorch/runtime/core/exec_aten/util/selected_mobile_ops.h>
-#else
-inline constexpr bool should_include_kernel_dtype(
-    const char* /*operator_name*/,
-    exec_aten::ScalarType /*scalar_type*/
-) {
-  return true;
-}
-#endif
-
-#define ET_INTERNAL_CHECK_SELECTIVE_BUILD(enum_type)               \
-  do {                                                             \
-    if (!should_include_kernel_dtype(et_switch_name, enum_type)) { \
-      ET_LOG(                                                      \
-          Error,                                                   \
-          "dtype '%" PRId8 "' not selected for operator %s",       \
-          static_cast<int8_t>(enum_type),                          \
-          et_switch_name);                                         \
-      torch::executor::runtime_abort();                            \
-    }                                                              \
-  } while (0)
-
 /// Maps ScalarTypes to C++ types.
 template <exec_aten::ScalarType N>
 struct ScalarTypeToCppType;
@@ -276,6 +252,16 @@ ET_FORALL_SCALAR_TYPES(SPECIALIZE_CppTypeToScalarType)
 //
 // Utility functions to retrieve metadata for a given ScalarType
 //
+
+/**
+ * Returns true if the parameter is one of the values covered by
+ * ET_FORALL_SCALAR_TYPES.
+ */
+inline bool isValid(exec_aten::ScalarType type) {
+  return static_cast<int8_t>(type) >= 0 &&
+      type < exec_aten::ScalarType::NumOptions &&
+      type != exec_aten::ScalarType::Undefined;
+}
 
 /**
  * Returns the name of a ScalarType as a C string.
@@ -565,38 +551,6 @@ inline exec_aten::ScalarType promoteTypes(
   return _promoteTypesLookup[static_cast<int>(a)][static_cast<int>(b)];
 }
 
-/**
- * Return the size of corresponding ctype given ScalarType.
- */
-inline size_t sizeof_scalar_type(exec_aten::ScalarType type) {
-  // Reject types that are not yet supported or are out of bounds.
-  ET_CHECK_MSG(
-      type != exec_aten::ScalarType::Half &&
-          type != exec_aten::ScalarType::ComplexHalf &&
-          type != exec_aten::ScalarType::ComplexFloat &&
-          type != exec_aten::ScalarType::ComplexDouble &&
-          type != exec_aten::ScalarType::BFloat16 &&
-          type != exec_aten::ScalarType::Undefined,
-      "Invalid or unsupported ScalarType %" PRId8,
-      static_cast<int8_t>(type));
-
-  size_t type_size = 0;
-#define SCALAR_TYPE_SIZE(ctype, dtype) \
-  case exec_aten::ScalarType::dtype:   \
-    type_size = sizeof(ctype);         \
-    break;
-
-  switch (type) {
-    ET_FORALL_SCALAR_TYPES(SCALAR_TYPE_SIZE)
-    default:
-      ET_CHECK_MSG(
-          false, "Invalid input ScalarType %" PRId8, static_cast<int8_t>(type));
-  }
-#undef SCALAR_TYPE_SIZE
-
-  return type_size;
-}
-
 //
 // Helper macros for switch case macros (see below)
 //
@@ -605,12 +559,20 @@ inline size_t sizeof_scalar_type(exec_aten::ScalarType type) {
 // by ExecuTorch.
 //
 
+#ifdef ET_INTERNAL_CHECK_SELECTIVE_BUILD
 #define ET_INTERNAL_SWITCH_CASE(enum_type, CTYPE_ALIAS, ...)  \
   case enum_type: {                                           \
     ET_INTERNAL_CHECK_SELECTIVE_BUILD(enum_type);             \
     using CTYPE_ALIAS = ScalarTypeToCppType<enum_type>::type; \
     return __VA_ARGS__();                                     \
   }
+#else
+#define ET_INTERNAL_SWITCH_CASE(enum_type, CTYPE_ALIAS, ...)  \
+  case enum_type: {                                           \
+    using CTYPE_ALIAS = ScalarTypeToCppType<enum_type>::type; \
+    return __VA_ARGS__();                                     \
+  }
+#endif
 
 #define ET_INTERNAL_SWITCH(TYPE, CONTEXT, NAME, ...) \
   [&] {                                              \
@@ -622,7 +584,7 @@ inline size_t sizeof_scalar_type(exec_aten::ScalarType type) {
         ET_CHECK_MSG(                                \
             false,                                   \
             "Unhandled dtype %s for %s",             \
-            toString(_st),                           \
+            torch::executor::toString(_st),          \
             et_switch_name);                         \
     }                                                \
   }()

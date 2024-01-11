@@ -5,8 +5,10 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import json
 import os
 import re
+from multiprocessing.connection import Client
 
 import numpy as np
 import piq
@@ -95,8 +97,10 @@ def annotate_forward(gm: torch.fx.GraphModule) -> None:
     import itertools
 
     from executorch.backends.qualcomm.qnn_quantizer import (
-        _is_annotated,
         get_ptq_per_channel_weight_config,
+    )
+    from executorch.backends.qualcomm.qnn_quantizer_utils import (
+        _is_annotated,
         QUANT_ANNOTATION_KEY,
     )
     from torch.ao.quantization.quantize_pt2e import QuantizationAnnotation
@@ -202,6 +206,18 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "--ip",
+        help="IPC address for delivering execution result",
+        default="",
+        type=str,
+    )
+    parser.add_argument(
+        "--port",
+        help="IPC port for delivering execution result",
+        default=-1,
+        type=int,
+    )
 
     # QNN_SDK_ROOT might also be an argument, but it is used in various places.
     # So maybe it's fine to just use the environment.
@@ -235,7 +251,7 @@ if __name__ == "__main__":
         (inputs[0],),
         args.model,
         f"{args.artifact}/{pte_filename}",
-        inputs,
+        [(input,) for input in inputs],
         custom_annotations=(annotate_forward,),
     )
     # setup required paths accordingly
@@ -289,5 +305,12 @@ if __name__ == "__main__":
     for i, hr in enumerate(targets):
         psnr_list.append(piq.psnr(hr, output_raws[i]))
         ssim_list.append(piq.ssim(hr, output_raws[i]))
-    print("Average of PNSR is: ", sum(psnr_list) / len(psnr_list))
-    print("Average of SSIM is: ", sum(ssim_list) / len(ssim_list))
+
+    avg_PNSR = sum(psnr_list).item() / len(psnr_list)
+    avg_SSIM = sum(ssim_list).item() / len(ssim_list)
+    if args.ip and args.port != -1:
+        with Client((args.ip, args.port)) as conn:
+            conn.send(json.dumps({"PNSR": avg_PNSR, "SSIM": avg_SSIM}))
+    else:
+        print(f"Average of PNSR is: {avg_PNSR}")
+        print(f"Average of SSIM is: {avg_SSIM}")

@@ -25,11 +25,6 @@ from executorch.backends.apple.mps.test.test_mps_utils import (
     TestMPS,
 )
 
-from executorch.bundled_program.config import BundledConfig
-from executorch.bundled_program.core import create_bundled_program
-from executorch.bundled_program.serialize import (
-    serialize_from_bundled_program_to_flatbuffer,
-)
 from executorch.exir import ExirExportedProgram
 from executorch.exir.backend.backend_api import to_backend
 from executorch.exir.tests.models import (
@@ -41,6 +36,12 @@ from executorch.exir.tests.models import (
     ModelWithUnusedArg,
     Mul,
     Repeat,
+)
+
+from executorch.sdk.bundled_program.config import MethodTestCase, MethodTestSuite
+from executorch.sdk.bundled_program.core import create_bundled_program
+from executorch.sdk.bundled_program.serialize import (
+    serialize_from_bundled_program_to_flatbuffer,
 )
 
 
@@ -79,7 +80,7 @@ def run_model(
 ):
     logging.info(f"Step 1: Retrieving model: {model}...")
     if model_type == MODEL_TYPE.EXIR_DEFAULT_MODEL:
-        m, m_inputs = EagerModelFactory.create_model(*MODEL_NAME_TO_MODEL[model])
+        m, m_inputs, _ = EagerModelFactory.create_model(*MODEL_NAME_TO_MODEL[model])
     elif model_type == MODEL_TYPE.EXIR_TEST_MODEL:
         m, m_inputs = EXIR_MODEL_NAME_TO_MODEL.get(model)()
     elif model_type == MODEL_TYPE.MPS_TEST_MODEL:
@@ -87,10 +88,12 @@ def run_model(
 
     m = m.eval()
 
-    m = export.capture_pre_autograd_graph(m, m_inputs)
+    pre_autograd_graph = export.capture_pre_autograd_graph(m, m_inputs)
 
     logging.info("Step 2: EXIR capturing of original module...")
-    edge = exir.capture(m, m_inputs, _CAPTURE_CONFIG).to_edge(_EDGE_COMPILE_CONFIG)
+    edge = exir.capture(pre_autograd_graph, m_inputs, _CAPTURE_CONFIG).to_edge(
+        _EDGE_COMPILE_CONFIG
+    )
 
     if dump_non_lowered_module:
         dump_executorch_program_info(edge=edge, module_info="Non-lowered")
@@ -129,21 +132,16 @@ def run_model(
         f"  -> Number of execution plans: {len(executorch_program.program.execution_plan)}"
     )
 
-    bundled_inputs = [
-        [m_inputs] for _ in range(len(executorch_program.program.execution_plan))
+    method_test_suites = [
+        MethodTestSuite(
+            method_name="forward",
+            test_cases=[MethodTestCase(inputs=m_inputs, expected_outputs=m(*m_inputs))],
+        )
     ]
-    logging.info("  -> Bundled inputs generated successfully")
 
-    output = m(*m_inputs)
-    expected_outputs = [
-        [[output]] for _ in range(len(executorch_program.program.execution_plan))
-    ]
-    logging.info("  -> Bundled outputs generated successfully")
+    logging.info("  -> Test suites generated successfully")
 
-    bundled_config = BundledConfig(["forward"], bundled_inputs, expected_outputs)
-    logging.info("  -> Bundled config generated successfully")
-
-    bundled_program = create_bundled_program(executorch_program.program, bundled_config)
+    bundled_program = create_bundled_program(executorch_program, method_test_suites)
     logging.info("  -> Bundled program generated successfully")
 
     bundled_program_buffer = serialize_from_bundled_program_to_flatbuffer(

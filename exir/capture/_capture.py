@@ -14,7 +14,7 @@ import torch._export
 from executorch.exir.capture._config import CaptureConfig
 from executorch.exir.error import ExportError, ExportErrorType, InternalError
 from executorch.exir.program import ExirExportedProgram, MultiMethodExirExportedProgram
-from executorch.exir.program._program import HackedUpExportedProgramDONOTUSE
+from executorch.exir.program._program import _transform, HackedUpExportedProgramDONOTUSE
 from executorch.exir.tracer import (
     _default_decomposition_table,
     dispatch_trace,
@@ -22,6 +22,7 @@ from executorch.exir.tracer import (
     flatten_output,
     Value,
 )
+from executorch.exir.verification.verifier import EXIRATenDialectVerifierBase
 from torch import _guards
 from torch._dispatch.python import enable_python_dispatcher
 from torch._dynamo.eval_frame import Constraint
@@ -78,10 +79,20 @@ def _capture_legacy_do_not_use(f, args) -> ExirExportedProgram:
     assert output_node.op == "output"
     user_outputs = [arg.name for arg in output_node.args[0]]
 
+    for n in graph_module.graph.nodes:
+        if n.op == "call_function" and "val" not in n.meta:
+            try:
+                args, kwargs = pytree.tree_map_only(
+                    torch.fx.Node, lambda x: x.meta["val"], (n.args, n.kwargs)
+                )
+                n.meta["val"] = n.target(*args, **kwargs)
+            except Exception:
+                n.meta["val"] = None
+
     ep = HackedUpExportedProgramDONOTUSE(
-        graph_module,
-        graph_module.graph,
-        ExportGraphSignature(
+        root=graph_module,
+        graph=graph_module.graph,
+        graph_signature=ExportGraphSignature(
             input_specs=[
                 InputSpec(
                     kind=InputKind.USER_INPUT, arg=TensorArgument(name=i), target=None
@@ -95,11 +106,10 @@ def _capture_legacy_do_not_use(f, args) -> ExirExportedProgram:
                 for o in user_outputs
             ],
         ),
-        CallSpec(in_spec, out_spec),
-        {},
-        {},
-        [],
-        [
+        call_spec=CallSpec(in_spec, out_spec),
+        state_dict={},
+        range_constraints={},
+        module_call_graph=[
             ModuleCallEntry(
                 fqn="",
                 signature=ModuleCallSignature(
@@ -110,7 +120,8 @@ def _capture_legacy_do_not_use(f, args) -> ExirExportedProgram:
                 ),
             )
         ],
-        None,
+        example_inputs=None,
+        verifier=EXIRATenDialectVerifierBase,
     )
     return ExirExportedProgram(ep, False)
 
@@ -157,8 +168,8 @@ def capture(  # noqa: C901
                 )
 
             ep = export(f, args, constraints=constraints)
-            ep = ep.run_decompositions(_default_decomposition_table())  # pyre-ignore[6]
-            ep = ep._transform(ReplaceViewOpsWithViewCopyOpsPass())
+            ep = ep.run_decompositions(_default_decomposition_table())
+            ep = _transform(ep, ReplaceViewOpsWithViewCopyOpsPass())
             if not config._unlift:
                 return ExirExportedProgram(ep, False)
             graph_module = ep.module()
@@ -280,14 +291,14 @@ def capture(  # noqa: C901
         for arg in output_node.args[0]
     ]
 
+    graph_module.graph.eliminate_dead_code()
     ep = ExportedProgram(
-        graph_module,
-        graph_module.graph,
-        ExportGraphSignature(user_inputs, user_outputs),
-        {},
-        {},
-        [],
-        [
+        root=graph_module,
+        graph=graph_module.graph,
+        graph_signature=ExportGraphSignature(user_inputs, user_outputs),
+        state_dict={},
+        range_constraints={},
+        module_call_graph=[
             ModuleCallEntry(
                 fqn="",
                 signature=ModuleCallSignature(
@@ -298,7 +309,8 @@ def capture(  # noqa: C901
                 ),
             )
         ],
-        dialect="OLD_EXIR_ATEN",
+        example_inputs=None,
+        verifier=EXIRATenDialectVerifierBase,
     )
     return ExirExportedProgram(ep, False)
 

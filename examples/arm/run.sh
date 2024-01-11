@@ -28,59 +28,68 @@ setup_path_script=${root_dir}/setup_path.sh
 
 # Executorch
 et_root_dir=$(cd ${script_dir}/../.. && pwd)
-et_build_dir=${root_dir}/executorch-cmake-out
+et_build_dir=${et_root_dir}/cmake-out
 
 fvp_model=FVP_Corstone_SSE-300_Ethos-U55
 toolchain_cmake=${script_dir}/ethos-u-setup/arm-none-eabi-gcc.cmake
 _setup_msg="please refer to ${script_dir}/ethos-u-setup/setup.sh to properly install necessary tools."
 
-
-# Generate the PTE file
+# Generate a pte file
 function generate_pte_file() {
-    cd $et_root_dir
-    python3 -m examples.arm.aot_arm_compiler --model_name="softmax"
-    local pte_file
-    pte_file="$(realpath ./softmax.pte)"
-    [[ -f ${pte_file} ]] || { echo "Failed to generate a pte file - ${pte_file}"; exit 1; }
-    echo "${pte_file}"
-}
+    [[ $# -ne 2 ]] && { echo "[${FUNCNAME[0]}]" "Expecting model and delegate flag, got, $*"; exit 1; }
+    local model=${1}
+    local delegate=${2}
 
-# Generate the ethos delegate PTE file
-function generate_ethos_pte_file() {
+    local model_filename=${model}.pte
+    if [ "${delegate}" = "--delegate" ]; then
+        model_filename=${model}_arm_delegate.pte
+    fi
     cd $et_root_dir
-    python3 -m examples.arm.aot_arm_compiler --model_name="add" --delegate 1>&2
+    python3 -m examples.arm.aot_arm_compiler --model_name="${model}" ${delegate} 1>&2
     local pte_file
-    pte_file=$(realpath ./add_arm_delegate.pte)
+    pte_file=$(realpath ${model_filename})
     [[ -f ${pte_file} ]] || { echo "Failed to generate a pte file - ${pte_file}"; exit 1; }
     echo "${pte_file}"
 }
 
 # build ExecuTorch Libraries
 function build_executorch() {
+    set -x
+
     [[ -d "${et_build_dir}" ]] \
         && echo "[${FUNCNAME[0]}] Warn: using already existing build-dir for executorch: ${et_build_dir}!!"
     mkdir -p "${et_build_dir}"
 
-    cd "${et_build_dir}"
+    cd "${et_root_dir}"
     cmake                                                 \
         -DBUCK2=${buck2}                                  \
-        -DEXECUTORCH_BUILD_XNNPACK=OFF                    \
-        -DEXECUTORCH_BUILD_GFLAGS=OFF                     \
+        -DCMAKE_INSTALL_PREFIX=${et_build_dir}            \
         -DEXECUTORCH_BUILD_EXECUTOR_RUNNER=OFF            \
-        -DEXECUTORCH_BUILD_HOST_TARGETS=OFF               \
-        -DEXECUTORCH_BUILD_SDK=OFF                        \
-        -DEXECUTORCH_BUILD_ARM_BAREMETAL=ON               \
         -DCMAKE_BUILD_TYPE=Release                        \
         -DEXECUTORCH_ENABLE_LOGGING=ON                    \
-        -DEXECUTORCH_SELECT_OPS_LIST="aten::_softmax.out" \
+        -DEXECUTORCH_BUILD_ARM_BAREMETAL=ON               \
         -DFLATC_EXECUTABLE="$(which flatc)"               \
         -DCMAKE_TOOLCHAIN_FILE="${toolchain_cmake}"       \
+        -B${et_build_dir}                                 \
         "${et_root_dir}"
 
     echo "[${FUNCNAME[0]}] Configured CMAKE"
 
     n=$(nproc)
-    cmake --build . -- -j"$((n - 5))"
+    cmake --build ${et_build_dir} -j"$((n - 5))" --target install --config Release
+
+    cmake                                                 \
+        -DCMAKE_INSTALL_PREFIX=${et_build_dir}            \
+        -DCMAKE_BUILD_TYPE=Release                        \
+        -DEXECUTORCH_SELECT_OPS_LIST="aten::_softmax.out" \
+        -DCMAKE_TOOLCHAIN_FILE="${toolchain_cmake}"       \
+        -B"${et_build_dir}"/examples/arm                  \
+        "${et_root_dir}"/examples/arm
+    cmake --build ${et_build_dir}/examples/arm -- -j"$((n - 5))"
+
+    set +x
+
+    cd "${et_build_dir}"
     echo "[${FUNCNAME[0]}] Generated static libraries for ExecuTorch:"
     find . -name "*.a" -exec ls -al {} \;
 }
@@ -150,16 +159,17 @@ type ${buck2} 2>&1 > /dev/null \
 # build executorch libraries
 build_executorch
 
-# generate a .pte file - in this case a non-delegated one
-pte=$(generate_pte_file)
-# build and run the runner with a non-delegated .pte
-build_executorch_runner "${pte}"
-run_fvp executor_runner.elf
+# the test models run, and whether to delegate
+test_model=( "softmax" "add" "add3" )
+test_delegate=( "" "--delegate" "--delegate" )
 
-# generate a pte with an ArmBackend delegate
-pte_delegate=$(generate_ethos_pte_file)
-# build and run the same app with a delegated .pte
-build_executorch_runner "${pte_delegate}"
-run_fvp executor_runner.elf
+# loop over running the AoT flow and executing the model on device
+for i in "${!test_model[@]}"; do
+    printf "Running e2e flow for model '%s' with flags '%s'\n" "${test_model[i]}" "${test_delegate[i]}"
+    pte=$(generate_pte_file "${test_model[i]}" "${test_delegate[i]}")
+    # Rebuild the application as the pte is imported as a header/c array
+    build_executorch_runner "${pte}"
+    run_fvp executor_runner.elf
+done
 
 exit 0

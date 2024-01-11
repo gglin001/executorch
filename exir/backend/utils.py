@@ -5,11 +5,14 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
+import operator
 from collections import defaultdict
 from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import torch
+from executorch.exir.common import setting_python_recursive_limit
+from executorch.exir.delegate import executorch_call_delegate
 from executorch.exir.dialects._ops import ops as exir_ops
 
 from executorch.exir.lowered_backend_module import create_submodule_from_nodes
@@ -60,9 +63,12 @@ def is_identical_graph(
     # is not the same.
     if len(list(graph_left.graph.nodes)) != len(list(graph_right.graph.nodes)):
         return False
-    for node_left, node_right in zip(graph_left.graph.nodes, graph_right.graph.nodes):
-        if not (is_same_node(node_left, node_right)):
-            return False
+    with setting_python_recursive_limit(30000):
+        for node_left, node_right in zip(
+            graph_left.graph.nodes, graph_right.graph.nodes
+        ):
+            if not (is_same_node(node_left, node_right)):
+                return False
     return True
 
 
@@ -165,6 +171,43 @@ def replace_quantized_partition_with_op(
     return (replaced_op, dequant_nodes, quant_nodes)
 
 
+def _get_item_from_executorch_call_delegate(node: torch.fx.Node) -> bool:
+    """
+    Check if the node is the getitem followed by executorch_call_delegate node. These getitems node
+    are just for getting the result from delegate because the input/output to delegates are flattened
+    """
+    return (
+        node.target == operator.getitem
+        and len(node.args) == 2
+        and node.args[0].target == executorch_call_delegate  # pyre-ignore
+        and isinstance(node.args[1], int)
+    )
+
+
+def get_non_lowered_nodes(graph: torch.fx.Graph) -> List[torch.fx.Node]:
+    """
+    Returns a list of non lowered nodes in the graph module.
+    """
+    return [
+        node
+        for node in graph.nodes
+        if node.op == "call_function"
+        and node.target != executorch_call_delegate
+        and (not _get_item_from_executorch_call_delegate(node))
+    ]
+
+
+def get_delegates(graph: torch.fx.Graph) -> List[torch.fx.Node]:
+    """
+    Returns the list of delegates from the graph.
+    """
+    return [
+        node
+        for node in graph.nodes
+        if node.op == "get_attr" and node.name.startswith("lowered_module_")
+    ]
+
+
 # TODO - style: use templated types
 class DelegateMappingBuilder:
     """
@@ -202,7 +245,8 @@ class DelegateMappingBuilder:
 
     def insert_delegate_mapping_entry(
         self,
-        nodes: Union[Node, List[Node]],
+        nodes: Optional[Union[Node, List[Node]]] = None,
+        handles: Optional[Union[int, List[int]]] = None,
         identifier: Optional[Union[int, str]] = None,
     ) -> Union[int, str]:
         """
@@ -217,8 +261,11 @@ class DelegateMappingBuilder:
 
         Args:
             nodes (Union[Node, List[Node]]): A (list of) Node(s)
+            handles (Union[int, List[int]]): A (list of) debug handle(s)
             identifier (Optional[Union[int, str]]):
                 Debug identifier corresponding to the Node(s)
+
+        Note: Exactly one of nodes and handles must be provided
 
         Returns:
             Union[int, str]:
@@ -236,6 +283,12 @@ class DelegateMappingBuilder:
                 "This delegate debug identifier was already inserted. Duplicate delegate debug identifiers are not allowed."
             )
 
+        # Check for exactly one of nodes and handles being populated
+        if not ((nodes is not None) ^ (handles is not None)):
+            raise Exception(
+                "Only one of nodes or handles must be provided. Either both were provided or neither were provided. Failed to add or update entry."
+            )
+
         # Resolve Identifier
         if identifier is None:
             if self._generated_identifiers:
@@ -246,13 +299,18 @@ class DelegateMappingBuilder:
                     "No identifier provided. Failed to add or update entry."
                 )
 
-        # Get all debug handles found in the nodes
-        # Note that missing debug handles are not surfaced
-        new_debug_handles = {
-            handle
-            for node in (nodes if isinstance(nodes, List) else [nodes])
-            if (handle := node.meta.get("debug_handle")) is not None
-        }
+        if nodes is not None:
+            # Get all debug handles found in the nodes
+            # Note that missing debug handles are not surfaced
+            new_debug_handles = {
+                handle
+                for node in (nodes if isinstance(nodes, List) else [nodes])
+                if (handle := node.meta.get("debug_handle")) is not None
+            }
+        else:
+            new_debug_handles = (
+                set(handles) if isinstance(handles, (tuple, List)) else {handles}
+            )
 
         # pyre-ignore Warning from Union[int, st] keys
         self._debug_handle_map[identifier].update(new_debug_handles)

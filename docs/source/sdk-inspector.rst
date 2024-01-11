@@ -34,7 +34,12 @@ Constructor
 
     from executorch.sdk import Inspector
 
-    inspector = Inspector(etdump_path="/path/to/etdump.etdp", etrecord_path="/path/to/etrecord.bin")
+    inspector = Inspector(etdump_path="/path/to/etdump.etdp", etrecord="/path/to/etrecord.bin")
+
+to_dataframe
+~~~~~~~~~~~~~~~~
+
+.. autofunction:: sdk.Inspector.to_dataframe
 
 
 print_data_tabular

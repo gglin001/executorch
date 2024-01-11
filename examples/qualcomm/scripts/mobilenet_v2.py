@@ -5,7 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import json
 import os
+from multiprocessing.connection import Client
 
 import numpy as np
 
@@ -46,7 +48,7 @@ def get_dataset(dataset_path, data_size):
         if index >= data_size:
             break
         feature, target = data
-        inputs.append(feature)
+        inputs.append((feature,))
         targets.append(target)
         input_list += f"input_{index}_0.raw\n"
 
@@ -101,6 +103,18 @@ if __name__ == "__main__":
         help="SoC model of current device. e.g. 'SM8550' for Snapdragon 8 Gen 2",
         type=str,
         required=True,
+    )
+    parser.add_argument(
+        "--ip",
+        help="IPC address for delivering execution result",
+        default="",
+        type=str,
+    )
+    parser.add_argument(
+        "--port",
+        help="IPC port for delivering execution result",
+        default=-1,
+        type=int,
     )
 
     # QNN_SDK_ROOT might also be an argument, but it is used in various places.
@@ -169,5 +183,11 @@ if __name__ == "__main__":
             )
         )
 
-    print(f"top_1->{topk_accuracy(predictions, targets, 1)}%")
-    print(f"top_5->{topk_accuracy(predictions, targets, 5)}%")
+    k_val = [1, 5]
+    topk = [topk_accuracy(predictions, targets, k).item() for k in k_val]
+    if args.ip and args.port != -1:
+        with Client((args.ip, args.port)) as conn:
+            conn.send(json.dumps({f"top_{k}": topk[i] for i, k in enumerate(k_val)}))
+    else:
+        for i, k in enumerate(k_val):
+            print(f"top_{k}->{topk[i]}%")

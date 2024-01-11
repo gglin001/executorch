@@ -22,19 +22,10 @@ if [[ -z "${BUILD_TOOL:-}" ]]; then
   exit 1
 fi
 
-XNNPACK_QUANTIZATION=$3
-if [[ -z "${XNNPACK_QUANTIZATION:-}" ]]; then
-  XNNPACK_QUANTIZATION=false
-fi
-
-XNNPACK_DELEGATION=$4
-if [[ -z "${XNNPACK_DELEGATION:-}" ]]; then
-  XNNPACK_DELEGATION=false
-fi
-
-DEMO_BACKEND_DELEGATION=$5
-if [[ -z "${DEMO_BACKEND_DELEGATION:-}" ]]; then
-  DEMO_BACKEND_DELEGATION=false
+BACKEND=$3
+if [[ -z "${BACKEND:-}" ]]; then
+  echo "Missing backend (require portable or xnnpack), exiting..."
+  exit 1
 fi
 
 which "${PYTHON_EXECUTABLE}"
@@ -46,7 +37,7 @@ build_cmake_executor_runner() {
   (rm -rf ${CMAKE_OUTPUT_DIR} \
     && mkdir ${CMAKE_OUTPUT_DIR} \
     && cd ${CMAKE_OUTPUT_DIR} \
-    && retry cmake -DBUCK2=buck2 \
+    && retry cmake -DBUCK2=buck2 -DCMAKE_BUILD_TYPE=Release \
       -DPYTHON_EXECUTABLE="$PYTHON_EXECUTABLE" ..)
 
   cmake --build ${CMAKE_OUTPUT_DIR} -j4
@@ -54,11 +45,9 @@ build_cmake_executor_runner() {
 
 test_model() {
   if [[ "${MODEL_NAME}" == "llama2" ]]; then
-    cd examples/third-party/llama
-    pip install -e .
-    cd ../../..
+    "${PYTHON_EXECUTABLE}" -m examples.models.llama2.export_llama
   fi
-
+  # python3 -m examples.portable.scripts.export --model_name="llama2" should works too
   "${PYTHON_EXECUTABLE}" -m examples.portable.scripts.export --model_name="${MODEL_NAME}"
 
   # Run test model
@@ -84,8 +73,8 @@ build_cmake_xnn_executor_runner() {
     && mkdir ${CMAKE_OUTPUT_DIR} \
     && cd ${CMAKE_OUTPUT_DIR} \
     && retry cmake -DBUCK2=buck2 \
+      -DCMAKE_BUILD_TYPE=Release \
       -DEXECUTORCH_BUILD_XNNPACK=ON \
-      -DREGISTER_QUANTIZED_OPS=ON \
       -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
       -DPYTHON_EXECUTABLE="$PYTHON_EXECUTABLE" ..)
 
@@ -99,7 +88,7 @@ test_model_with_xnnpack() {
   # Quantization-only
   if [[ ${WITH_QUANTIZATION} == true ]] && [[ ${WITH_DELEGATION} == false ]]; then
     bash examples/xnnpack/quantization/test_quantize.sh "${BUILD_TOOL}" "${MODEL_NAME}"
-    exit 0
+    return 0
   fi
 
   # Delegation
@@ -127,39 +116,29 @@ test_model_with_xnnpack() {
   fi
 }
 
-test_demo_backend_delegation() {
-  echo "Testing demo backend delegation on AddMul"
-  "${PYTHON_EXECUTABLE}" -m examples.portable.scripts.export_and_delegate  --option "composite"
-  "${PYTHON_EXECUTABLE}" -m examples.portable.scripts.export_and_delegate  --option "partition"
-  "${PYTHON_EXECUTABLE}" -m examples.portable.scripts.export_and_delegate  --option "whole"
-
-  # Run test model
-  if [[ "${BUILD_TOOL}" == "buck2" ]]; then
-    buck2 run //examples/portable/executor_runner:executor_runner -- --model_path "./composite_model.pte"
-    buck2 run //examples/portable/executor_runner:executor_runner -- --model_path "./partition_lowered_model.pte"
-    buck2 run //examples/portable/executor_runner:executor_runner -- --model_path "./whole.pte"
-  elif [[ "${BUILD_TOOL}" == "cmake" ]]; then
-    if [[ ! -f ${CMAKE_OUTPUT_DIR}/executor_runner ]]; then
-      build_cmake_executor_runner
-    fi
-    ./${CMAKE_OUTPUT_DIR}/executor_runner --model_path "./composite_model.pte"
-    ./${CMAKE_OUTPUT_DIR}/executor_runner --model_path "./partition_lowered_model.pte"
-    ./${CMAKE_OUTPUT_DIR}/executor_runner --model_path "./whole.pte"
-  else
-    echo "Invalid build tool ${BUILD_TOOL}. Only buck2 and cmake are supported atm"
-    exit 1
-  fi
-}
-
-if [[ "${XNNPACK_DELEGATION}" == false ]] && [[ "${XNNPACK_QUANTIZATION}" == false ]]; then
+if [[ "${BACKEND}" == "portable" ]]; then
   echo "Testing ${MODEL_NAME} with portable kernels..."
   test_model
 else
-  echo "Testing ${MODEL_NAME} with XNNPACK quantization=${XNNPACK_QUANTIZATION} delegation=${XNNPACK_DELEGATION}..."
-  test_model_with_xnnpack "${XNNPACK_QUANTIZATION}" "${XNNPACK_DELEGATION}"
-fi
-
-# Test demo backend delegation
-if [[ "${DEMO_BACKEND_DELEGATION}" == true ]]; then
-  test_demo_backend_delegation
+  set +e
+  if [[ "${BACKEND}" == *"quantization"* ]]; then
+    echo "::group::Testing ${MODEL_NAME} with XNNPACK quantization only..."
+    test_model_with_xnnpack true false || Q_ERROR="error"
+    echo "::endgroup::"
+  fi
+  if [[ "${BACKEND}" == *"delegation"* ]]; then
+    echo "::group::Testing ${MODEL_NAME} with XNNPACK delegation only..."
+    test_model_with_xnnpack false true || D_ERROR="error"
+    echo "::endgroup::"
+  fi
+  if [[ "${BACKEND}" == *"quantization"* ]] && [[ "${BACKEND}" == *"delegation"* ]]; then
+    echo "::group::Testing ${MODEL_NAME} with XNNPACK quantization and delegation..."
+    test_model_with_xnnpack true true || Q_D_ERROR="error"
+    echo "::endgroup::"
+  fi
+  set -e
+  if [[ -n "${Q_ERROR:-}" ]] || [[ -n "${D_ERROR:-}" ]] || [[ -n "${Q_D_ERROR:-}" ]]; then
+    echo "Portable q8 ${Q_ERROR:-ok}," "Delegation fp32 ${D_ERROR:-ok}," "Delegation q8 ${Q_D_ERROR:-ok}"
+    exit 1
+  fi
 fi

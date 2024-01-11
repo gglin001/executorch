@@ -352,6 +352,11 @@ print("Transformed Edge Dialect Graph")
 print(transformed_edge_program.exported_program())
 
 ######################################################################
+# Note: if you see error like `torch._export.verifier.SpecViolationError: Operator torch._ops.aten._native_batch_norm_legit_functional.default is not Aten Canonical`,
+# please file an issue in https://github.com/pytorch/executorch/issues and we're happy to help!
+
+
+######################################################################
 # Delegating to a Backend
 # -----------------------
 #
@@ -466,7 +471,7 @@ print(exported_program.graph_module.lowered_module_0.processed_bytes)
 print(exported_program.graph_module.lowered_module_0.original_module)
 
 ######################################################################
-# Notice that there is now a ``torch.ops.executorch_call_delegate`` node in the
+# Notice that there is now a ``torch.ops.higher_order.executorch_call_delegate`` node in the
 # graph, which is calling ``lowered_module_0``. Additionally, the contents of
 # ``lowered_module_0`` are the same as the ``lowered_module`` we created
 # previously.
@@ -501,14 +506,14 @@ print(exported_program)
 
 from executorch.exir.backend.test.op_partitioner_demo import AddMulPartitionerDemo
 
-delegated_program = to_backend(exported_program, AddMulPartitionerDemo)
+delegated_program = to_backend(exported_program, AddMulPartitionerDemo())
 print("Delegated program")
 print(delegated_program)
 print(delegated_program.graph_module.lowered_module_0.original_module)
 print(delegated_program.graph_module.lowered_module_1.original_module)
 
 ######################################################################
-# Notice that there are now 2 ``torch.ops.executorch_call_delegate`` nodes in the
+# Notice that there are now 2 ``torch.ops.higher_order.executorch_call_delegate`` nodes in the
 # graph, one containing the operations `add, mul` and the other containing the
 # operations `mul, add`.
 #
@@ -530,7 +535,7 @@ pre_autograd_aten_dialect = capture_pre_autograd_graph(f, example_args)
 aten_dialect: ExportedProgram = export(pre_autograd_aten_dialect, example_args)
 edge_program: EdgeProgramManager = to_edge(aten_dialect)
 exported_program = edge_program.exported_program()
-delegated_program = edge_program.to_backend(AddMulPartitionerDemo)
+delegated_program = edge_program.to_backend(AddMulPartitionerDemo())
 
 print("Delegated program")
 print(delegated_program.exported_program())

@@ -29,6 +29,9 @@ use TARGETS files normally. Same for xplat-only directories and BUCK files.
 load(":env_interface.bzl", "env")
 load(":selects.bzl", "selects")
 
+def struct_to_json(x):
+    return env.struct_to_json(struct(**x))
+
 def get_default_executorch_platforms():
     return env.default_platforms
 
@@ -230,6 +233,7 @@ def _cxx_library_common(*args, **kwargs):
     env.patch_headers(kwargs)
     env.patch_pp_flags(kwargs)
     env.patch_cxx_compiler_flags(kwargs)
+    env.patch_force_static(kwargs)
 
     env.cxx_library(*args, **kwargs)
 

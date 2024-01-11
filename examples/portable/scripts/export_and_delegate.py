@@ -59,7 +59,7 @@ def export_composite_module_with_lower_graph():
         "Running the example to export a composite module with lowered graph..."
     )
 
-    m, m_inputs = EagerModelFactory.create_model(*MODEL_NAME_TO_MODEL["add_mul"])
+    m, m_inputs, _ = EagerModelFactory.create_model(*MODEL_NAME_TO_MODEL["add_mul"])
     m_compile_spec = m.get_compile_spec()
 
     # pre-autograd export. eventually this will become torch.export
@@ -142,7 +142,7 @@ def export_and_lower_partitioned_graph():
 
     # Lower to backend_with_compiler_demo
     logging.info("Lowering to the demo backend...")
-    edge = edge.to_backend(AddMulPartitionerDemo)
+    edge = edge.to_backend(AddMulPartitionerDemo())
     logging.info(f"Lowered graph:\n{edge.exported_program().graph}")
 
     exec_prog = edge.to_executorch()
@@ -168,7 +168,7 @@ def export_and_lower_the_whole_graph():
     """
     logging.info("Running the example to export and lower the whole graph...")
 
-    m, m_inputs = EagerModelFactory.create_model(*MODEL_NAME_TO_MODEL["add_mul"])
+    m, m_inputs, _ = EagerModelFactory.create_model(*MODEL_NAME_TO_MODEL["add_mul"])
     m_compile_spec = m.get_compile_spec()
 
     m_inputs = m.get_example_inputs()

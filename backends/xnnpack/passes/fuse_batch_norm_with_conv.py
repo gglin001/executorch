@@ -11,6 +11,7 @@ import torch
 from executorch.backends.xnnpack.passes.xnnpack_pass import XNNPACKPass
 
 from executorch.backends.xnnpack.utils.utils import get_param_tensor, is_param_node
+from executorch.exir import ExportedProgram
 from executorch.exir.dialects._ops import ops as exir_ops
 from executorch.exir.pass_base import PassResult
 
@@ -21,9 +22,8 @@ class FuseBatchNormWithConvPass(XNNPACKPass):
     """
     Batch Norm can be implemented using 1x1 Depthwise Convolution. However doing so will increase
     memory usage since we serialize new weights to represent the convolution. In most cases,
-    Batch norm is used after convoluution. The 1x1 depthwise convolution can then be fused
+    Batch norm is used after convolution. The 1x1 depthwise convolution can then be fused
     with the previous convolution
-
     """
 
     def call(self, graph_module: torch.fx.GraphModule):
@@ -48,25 +48,15 @@ class FuseBatchNormWithConvPass(XNNPACKPass):
             ):
                 continue
 
-            # All the users of batchnorm node must be getitem ops. batchnorm
-            # returns a 3-element tuple. Each user must only access the first
-            # element of the tuple.
-            if [
-                (user.target == operator.getitem and user.args[1] == 0)
-                for user in bn.users
-            ].count(False):
-                continue
-
-            # Check that the weights for conv and batchnorm are both params
-            if [
-                is_param_node(self.exported_program, node)
-                for node in {conv.args[1], bn.args[1]}
-            ].count(False):
+            if not self.can_fuse(conv, bn, self.exported_program):
                 continue
 
             # Get the parameters from conv op
             assert len(conv.args) == 9
+
             conv_weight = get_param_tensor(self.exported_program, conv.args[1])
+            assert conv_weight is not None
+
             conv_bias = get_param_tensor(self.exported_program, conv.args[2])
 
             # Get the parameters from the batchnorm op
@@ -80,8 +70,12 @@ class FuseBatchNormWithConvPass(XNNPACKPass):
             )
             bn_weight = get_param_tensor(self.exported_program, bn.args[1])
             bn_bias = get_param_tensor(self.exported_program, bn.args[2])
+
             running_mean = get_param_tensor(self.exported_program, bn.args[3])
+            assert running_mean is not None
+
             running_var = get_param_tensor(self.exported_program, bn.args[4])
+            assert running_var is not None
 
             # args[7] for native_batch_norm, but args[6] for
             # _native_batch_norm_legit_no_training (which doesn't have training
@@ -131,3 +125,35 @@ class FuseBatchNormWithConvPass(XNNPACKPass):
         graph_module = super().call(graph_module).graph_module
 
         return PassResult(graph_module, True)
+
+    @staticmethod
+    def can_fuse(
+        conv: torch.fx.Node, bn: torch.fx.Node, program: ExportedProgram
+    ) -> bool:
+        """
+        Determine whether a batch norm node can be fused with a preceding conv node.
+        """
+
+        # All the users of batchnorm node must be getitem ops. batchnorm
+        # returns a 3-element tuple. Each user must only access the first
+        # element of the tuple.
+        if [
+            (user.target == operator.getitem and user.args[1] == 0) for user in bn.users
+        ].count(False):
+            return False
+
+        conv_weights = conv.args[1]
+        bn_weights = bn.args[1]
+
+        # Check that the weights for conv and batchnorm are both params
+        if not isinstance(conv_weights, torch.fx.Node) or not isinstance(
+            bn_weights, torch.fx.Node
+        ):
+            return False
+
+        if [is_param_node(program, node) for node in {conv_weights, bn_weights}].count(
+            False
+        ):
+            return False
+
+        return True

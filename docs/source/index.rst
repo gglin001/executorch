@@ -147,6 +147,8 @@ Topics in this section will help you get started with ExecuTorch.
    runtime-overview
    runtime-backend-delegate-implementation-and-linking
    runtime-platform-abstraction-layer
+   portable-cpp-programming
+   pte-file-format
 
 .. toctree::
    :glob:
@@ -169,10 +171,12 @@ Topics in this section will help you get started with ExecuTorch.
 .. toctree::
    :glob:
    :maxdepth: 1
-   :caption: Native Delegates
+   :caption: Backend Delegates
    :hidden:
 
    native-delegates-executorch-xnnpack-delegate
+   backend-delegates-integration
+   backend-delegates-dependencies
 
 .. toctree::
    :glob:
@@ -185,6 +189,7 @@ Topics in this section will help you get started with ExecuTorch.
    sdk-etrecord
    sdk-etdump
    sdk-profiling
+   sdk-debugging
    sdk-inspector
    sdk-delegate-integration
    sdk-tutorial

@@ -10,6 +10,11 @@ ENV DEBIAN_FRONTEND noninteractive
 COPY ./common/install_base.sh install_base.sh
 RUN bash ./install_base.sh && rm install_base.sh
 
+COPY ./common/install_openssl.sh install_openssl.sh
+RUN bash ./install_openssl.sh && rm install_openssl.sh
+ENV OPENSSL_ROOT_DIR /opt/openssl
+ENV OPENSSL_DIR /opt/openssl
+
 # Install clang
 ARG CLANG_VERSION
 COPY ./common/install_clang.sh install_clang.sh
@@ -32,9 +37,6 @@ RUN bash ./install_docs_reqs.sh && rm install_docs_reqs.sh
 # Install conda and other dependencies
 ARG MINICONDA_VERSION
 ARG PYTHON_VERSION
-ARG TORCH_VERSION
-ARG TORCHAUDIO_VERSION
-ARG TORCHVISION_VERSION
 ENV PYTHON_VERSION=$PYTHON_VERSION
 ENV PATH /opt/conda/envs/py_$PYTHON_VERSION/bin:/opt/conda/bin:$PATH
 COPY requirements-ci.txt /opt/conda/
@@ -43,6 +45,19 @@ COPY ./common/install_conda.sh install_conda.sh
 COPY ./common/utils.sh utils.sh
 RUN bash ./install_conda.sh && rm install_conda.sh utils.sh /opt/conda/requirements-ci.txt /opt/conda/conda-env-ci.txt
 
+# Install sccache before building torch
+COPY ./common/install_cache.sh install_cache.sh
+ENV PATH /opt/cache/bin:$PATH
+COPY ./common/utils.sh utils.sh
+RUN bash ./install_cache.sh && rm install_cache.sh utils.sh
+ENV SCCACHE_BUCKET ossci-compiler-cache-circleci-v2
+ENV SCCACHE_S3_KEY_PREFIX executorch
+
+ARG TORCH_VERSION
+COPY ./common/install_pytorch.sh install_pytorch.sh
+COPY ./common/utils.sh utils.sh
+RUN bash ./install_pytorch.sh && rm install_pytorch.sh utils.sh
+
 ARG LINTRUNNER
 # Install lintrunner if needed
 COPY ./common/install_linter.sh install_linter.sh
@@ -50,6 +65,11 @@ COPY ./common/utils.sh utils.sh
 COPY ./requirements-lintrunner.txt requirements-lintrunner.txt
 RUN if [ -n "${LINTRUNNER}" ]; then bash ./install_linter.sh; fi
 RUN rm install_linter.sh utils.sh requirements-lintrunner.txt
+
+ARG ARM_SDK
+COPY --chown=ci-user:ci-user ./arm /opt/arm
+# Set up ARM SDK if needed
+RUN if [ -n "${ARM_SDK}" ]; then git config --global user.email "ossci@example.com"; git config --global user.name "OSS CI"; bash /opt/arm/setup.sh --i-agree-to-the-contained-eula /opt/arm-sdk; chown -R ci-user:ci-user /opt/arm-sdk; fi
 
 USER ci-user
 CMD ["bash"]

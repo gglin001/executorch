@@ -102,7 +102,7 @@ class LoweredBackendModule(torch.nn.Module):
     # TODO(chenlai): consolidate the seriailization config with serialize_to_flatbuffer api
     def buffer(
         self,
-        extract_segments: bool = False,
+        extract_delegate_segments: bool = False,
         segment_alignment: int = 4096,
         constant_tensor_alignment: Optional[int] = None,
         delegate_alignment: Optional[int] = None,
@@ -112,7 +112,7 @@ class LoweredBackendModule(torch.nn.Module):
         """
         out = _serialize_pte_binary(
             program=self.program(),
-            extract_segments=extract_segments,
+            extract_delegate_segments=extract_delegate_segments,
             segment_alignment=segment_alignment,
             constant_tensor_alignment=constant_tensor_alignment,
             delegate_alignment=delegate_alignment,
@@ -122,6 +122,11 @@ class LoweredBackendModule(torch.nn.Module):
     # TODO(chenlai): re-consider recapture instead of manually constructing the program because
     # the meta data construction is done manually.
     def program(self, emit_stacktrace: bool = False) -> Program:
+        from executorch.exir.program._program import (
+            _get_updated_graph_signature,
+            _transform,
+        )
+
         """
         Returns the object that represents the ExecuTorch binary before serialization.
         """
@@ -210,6 +215,9 @@ class LoweredBackendModule(torch.nn.Module):
         delegate_node.meta["spec"] = tuple(
             [make_spec(node.meta["val"]) for node in original_output_nodes]
         )
+        delegate_node.meta["val"] = tuple(
+            [node.meta["val"] for node in original_output_nodes]
+        )
 
         # The getitem nodes that are going to be inserted to the lowered graph module
         getitem_nodes = []
@@ -218,6 +226,7 @@ class LoweredBackendModule(torch.nn.Module):
                 operator.getitem,
                 args=(delegate_node, i),
             )
+            getitem_node.meta["val"] = delegate_node.meta["val"][i]
             getitem_nodes.append(getitem_node)
         lowered_exported_program.graph.output(getitem_nodes)
 
@@ -253,8 +262,11 @@ class LoweredBackendModule(torch.nn.Module):
         exported_program = ExportedProgram(
             root=lowered_exported_program.graph_module,
             graph=lowered_exported_program.graph,
-            graph_signature=ExportGraphSignature(
-                input_specs=input_specs, output_specs=output_specs
+            graph_signature=_get_updated_graph_signature(
+                ExportGraphSignature(
+                    input_specs=input_specs, output_specs=output_specs
+                ),
+                lowered_exported_program.graph_module,
             ),
             # TODO: May need to set lowered_exported_program.call_spec = CallSpec(None, None)
             # somewhere as we should pass it a list of tensors to the lowered module and output a
@@ -262,11 +274,12 @@ class LoweredBackendModule(torch.nn.Module):
             # inputs/outputs to the toplevel program will be in the format of the eager module.
             state_dict={},  # None because all data are consumed by delegate
             range_constraints=lowered_exported_program.range_constraints,
-            equality_constraints=lowered_exported_program.equality_constraints,
             module_call_graph=lowered_exported_program.module_call_graph,
+            example_inputs=None,
+            verifier=lowered_exported_program.verifier,
         )
-        exported_program = exported_program._transform(
-            SpecPropPass(), MemoryPlanningPass("greedy")
+        exported_program = _transform(
+            exported_program, SpecPropPass(), MemoryPlanningPass("greedy")
         )
         emitted_program = emit_program(
             exported_program, emit_stacktrace=emit_stacktrace
@@ -422,7 +435,9 @@ def _get_new_signature(
                     )
                 )
         if node.op == "output":
-            for output in node.all_input_nodes:
+            for output in pytree.tree_leaves((node.args, node.kwargs)):
+                if not isinstance(output, torch.fx.Node):
+                    continue
                 output_specs.append(
                     OutputSpec(
                         kind=OutputKind.USER_OUTPUT,
@@ -464,8 +479,8 @@ def create_exported_program_from_submodule(
         graph_signature=subgraph_signature,
         state_dict=subgraph_state_dict,
         range_constraints=copy.deepcopy(owning_program.range_constraints),
-        equality_constraints=[],
         module_call_graph=[],
+        verifier=owning_program.verifier,
     )
 
 

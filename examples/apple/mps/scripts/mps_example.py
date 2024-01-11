@@ -8,18 +8,16 @@
 import argparse
 import logging
 
-import torch
-
 import torch._export as export
 from executorch import exir
 from executorch.backends.apple.mps.mps_preprocess import MPSBackend
-from executorch.bundled_program.config import BundledConfig
-from executorch.bundled_program.core import create_bundled_program
-from executorch.bundled_program.serialize import (
-    serialize_from_bundled_program_to_flatbuffer,
-)
 
 from executorch.exir.backend.backend_api import to_backend
+from executorch.sdk.bundled_program.config import MethodTestCase, MethodTestSuite
+from executorch.sdk.bundled_program.core import create_bundled_program
+from executorch.sdk.bundled_program.serialize import (
+    serialize_from_bundled_program_to_flatbuffer,
+)
 
 from ....models import MODEL_NAME_TO_MODEL
 from ....models.model_factory import EagerModelFactory
@@ -52,7 +50,7 @@ if __name__ == "__main__":
     if args.model_name not in MODEL_NAME_TO_MODEL:
         raise RuntimeError(f"Available models are {list(MODEL_NAME_TO_MODEL.keys())}.")
 
-    model, example_inputs = EagerModelFactory.create_model(
+    model, example_inputs, _ = EagerModelFactory.create_model(
         *MODEL_NAME_TO_MODEL[args.model_name]
     )
 
@@ -70,17 +68,9 @@ if __name__ == "__main__":
 
     logging.info(f"Lowered graph:\n{edge.exported_program.graph}")
 
-    class WrappedModule(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.mps_module = lowered_module
-
-        def forward(self, *input_args):
-            return self.mps_module(*input_args)
-
     executorch_program = (
         exir.capture(
-            WrappedModule(),
+            lowered_module,
             example_inputs,
             exir.CaptureConfig(enable_aot=True, _unlift=True),
         )
@@ -91,20 +81,18 @@ if __name__ == "__main__":
     model_name = f"{args.model_name}_mps"
 
     if args.bundled:
-        bundled_inputs = [
-            [example_inputs]
-            for _ in range(len(executorch_program.program.execution_plan))
+        method_test_suites = [
+            MethodTestSuite(
+                method_name="forward",
+                test_cases=[
+                    MethodTestCase(
+                        inputs=example_inputs, expected_outputs=[model(*example_inputs)]
+                    )
+                ],
+            )
         ]
 
-        output = model(*example_inputs)
-        expected_outputs = [
-            [[output]] for _ in range(len(executorch_program.program.execution_plan))
-        ]
-
-        bundled_config = BundledConfig(["forward"], bundled_inputs, expected_outputs)
-        bundled_program = create_bundled_program(
-            executorch_program.program, bundled_config
-        )
+        bundled_program = create_bundled_program(executorch_program, method_test_suites)
         bundled_program_buffer = serialize_from_bundled_program_to_flatbuffer(
             bundled_program
         )

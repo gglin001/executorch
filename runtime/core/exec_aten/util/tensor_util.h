@@ -411,6 +411,24 @@ using ScalarType = exec_aten::ScalarType;
 //
 // Utility functions for checking tensor attributes
 //
+//
+
+/*
+ * Returns true if the given dimension value is between -upper_bound and
+ * upper_bound - 1, inclusive.
+ */
+inline bool dim_is_valid(int64_t dim, int64_t upper_bound) {
+  ET_LOG_MSG_AND_RETURN_IF_FALSE(
+      dim >= -upper_bound && dim < upper_bound,
+      "Dimension %" PRId64
+      " is out of range. Dimension should be between %" PRId64 " and %" PRId64
+      ", inclusive.",
+      dim,
+      -upper_bound,
+      upper_bound - 1);
+
+  return true;
+}
 
 /*
  * Returns the tensor's number of dimensions, except when the tensor is zero
@@ -560,6 +578,13 @@ inline bool tensor_has_dim(exec_aten::Tensor t, int64_t d) {
         static_cast<size_t>(t.dim()),
         static_cast<size_t>(d));
   }
+  return true;
+}
+
+inline bool tensor_has_non_empty_dim(exec_aten::Tensor t, int64_t d) {
+  const size_t udim = ET_NORMALIZE_IX(d, t.dim());
+  ET_LOG_AND_RETURN_IF_FALSE(tensor_has_dim(t, d));
+  ET_LOG_AND_RETURN_IF_FALSE(t.size(udim) != 0);
   return true;
 }
 
@@ -796,6 +821,15 @@ inline bool tensor_is_contiguous(exec_aten::Tensor t) {
         static_cast<size_t>(strides[i] * sizes[i]),
         static_cast<size_t>(strides[i - 1]));
   }
+  return true;
+}
+
+inline bool tensors_have_same_rank(exec_aten::Tensor a, exec_aten::Tensor b) {
+  ET_LOG_MSG_AND_RETURN_IF_FALSE(
+      a.dim() == b.dim(),
+      ET_TENSOR_CHECK_PREFIX__ ": rank={%zd, %zd}",
+      ssize_t(a.dim()),
+      ssize_t(b.dim()));
   return true;
 }
 

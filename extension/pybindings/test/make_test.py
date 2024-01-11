@@ -40,6 +40,9 @@ def make_test(  # noqa: C901
             def get_methods_to_export(self):
                 return ("forward",)
 
+            def get_inputs(self):
+                return (torch.ones(2, 2), torch.ones(2, 2))
+
         class ModuleMulti(torch.nn.Module):
             """The module to serialize and execute."""
 
@@ -55,13 +58,31 @@ def make_test(  # noqa: C901
             def get_methods_to_export(self):
                 return ("forward", "forward2")
 
+            def get_inputs(self):
+                return (torch.ones(2, 2), torch.ones(2, 2))
+
+        class ModuleAddSingleInput(torch.nn.Module):
+            """The module to serialize and execute."""
+
+            def __init__(self):
+                super(ModuleAddSingleInput, self).__init__()
+
+            def forward(self, x):
+                return x + x
+
+            def get_methods_to_export(self):
+                return ("forward",)
+
+            def get_inputs(self):
+                return (torch.ones(2, 2),)
+
         def create_program(
             eager_module: torch.nn.Module,
         ) -> Tuple[Program, Tuple[Any, ...]]:
             """Returns an executorch program based on ModuleAdd, along with inputs."""
 
             # Trace the test module and create a serialized ExecuTorch program.
-            inputs = (torch.ones(2, 2), torch.ones(2, 2))
+            inputs = eager_module.get_inputs()
             input_map = {}
             for method in eager_module.get_methods_to_export():
                 input_map[method] = inputs
@@ -116,8 +137,77 @@ def make_test(  # noqa: C901
             outputs = lower_function_call()
             tester.assertTrue(torch.allclose(outputs[0], torch.ones(2, 2) * 2))
 
+        def test_module_callable(tester):
+            # Create an ExecuTorch program from ModuleAdd.
+            exported_program, inputs = create_program(ModuleAdd())
+
+            # Use pybindings to load and execute the program.
+            executorch_module = load_fn(exported_program.buffer)
+            # Invoke the callable on executorch_module instead of calling module.forward.
+            executorch_output = executorch_module(inputs)[0]
+
+            # The test module adds the two inputs, so its output should be the same
+            # as adding them directly.
+            expected = inputs[0] + inputs[1]
+            tester.assertEqual(str(expected), str(executorch_output))
+
+        def test_module_single_input(tester):
+            # Create an ExecuTorch program from ModuleAdd.
+            exported_program, inputs = create_program(ModuleAddSingleInput())
+
+            # Use pybindings to load and execute the program.
+            executorch_module = load_fn(exported_program.buffer)
+            # Inovke the callable on executorch_module instead of calling module.forward.
+            # Use only one input to test this case.
+            executorch_output = executorch_module(inputs[0])[0]
+
+            # The test module adds the two inputs, so its output should be the same
+            # as adding them directly.
+            expected = inputs[0] + inputs[0]
+            tester.assertEqual(str(expected), str(executorch_output))
+
+        def test_stderr_redirect(tester):
+            import sys
+            from io import StringIO
+
+            class RedirectedStderr:
+                def __init__(self):
+                    self._stderr = None
+                    self._string_io = None
+
+                def __enter__(self):
+                    self._stderr = sys.stderr
+                    sys.stderr = self._string_io = StringIO()
+                    return self
+
+                def __exit__(self, type, value, traceback):
+                    sys.stderr = self._stderr
+
+                def __str__(self):
+                    return self._string_io.getvalue()
+
+            with RedirectedStderr() as out:
+                try:
+                    # Create an ExecuTorch program from ModuleAdd.
+                    exported_program, inputs = create_program(ModuleAdd())
+
+                    # Use pybindings to load and execute the program.
+                    executorch_module = load_fn(exported_program.buffer)
+
+                    # add an extra input to trigger error
+                    inputs = (*inputs, 1)
+
+                    # Invoke the callable on executorch_module instead of calling module.forward.
+                    executorch_output = executorch_module(inputs)[0]  # noqa
+                    tester.assertFalse(True)  # should be unreachable
+                except Exception:
+                    tester.assertTrue("The length of given input array" in str(out))
+
         test_e2e(tester)
         test_multiple_entry(tester)
         test_output_lifespan(tester)
+        test_module_callable(tester)
+        test_module_single_input(tester)
+        test_stderr_redirect(tester)
 
     return wrapper

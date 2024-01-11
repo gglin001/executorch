@@ -10,6 +10,13 @@ def define_common_targets():
     for aten_mode in (True, False):
         aten_suffix = "_aten" if aten_mode else ""
 
+        exported_preprocessor_flags_ = []
+        exported_deps_ = ["//executorch/runtime/core:core"]
+        if aten_mode:
+            exported_preprocessor_flags_ += ["-DUSE_ATEN_LIB"]
+        else:
+            exported_deps_ += ["//executorch/runtime/core/portable_type:scalar_type"]
+
         runtime.cxx_library(
             name = "scalar_type_util" + aten_suffix,
             srcs = [],
@@ -20,10 +27,8 @@ def define_common_targets():
                 "//executorch/...",
                 "@EXECUTORCH_CLIENTS",
             ],
-            exported_preprocessor_flags = ["-DUSE_ATEN_LIB"] if aten_mode else [],
-            exported_deps = [
-                "//executorch/runtime/core:core",
-            ] + [] if aten_mode else ["//executorch/runtime/core/portable_type:scalar_type"],
+            exported_preprocessor_flags = exported_preprocessor_flags_,
+            exported_deps = exported_deps_,
             exported_external_deps = ["libtorch"] if aten_mode else [],
         )
 

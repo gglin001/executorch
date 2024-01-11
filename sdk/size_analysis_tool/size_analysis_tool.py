@@ -12,8 +12,7 @@ import torch
 
 from executorch.exir import ExportedProgram
 from executorch.exir.backend.backend_api import LoweredBackendModule
-from executorch.sdk.etrecord import parse_etrecord
-from executorch.sdk.etrecord._etrecord import ETRecordReservedFileNames
+from executorch.sdk import parse_etrecord
 
 
 def _get_tensor_data(node: torch.fx.Node, tensor: torch.Tensor) -> Dict[str, Any]:
@@ -168,11 +167,7 @@ def main():
         generate_model_size_information(
             model=exported_program,
             delegate_deserializers=None,
-            flatbuffer=(
-                etrecord.program_buffer
-                if name == ETRecordReservedFileNames.ET_DIALECT_GRAPH_MODULE
-                else None
-            ),
+            flatbuffer=None,
         )
         for (name, exported_program) in etrecord.graph_map.items()
     ]

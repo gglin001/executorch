@@ -8,18 +8,14 @@ import copy
 import logging
 from contextlib import contextmanager
 from functools import singledispatch
-from typing import Generator, List, Type
+from typing import Generator, List
 
 import torch
 
 from executorch.exir.backend.backend_details import BackendDetails, PreprocessResult
 from executorch.exir.backend.compile_spec_schema import CompileSpec
 
-from executorch.exir.backend.partitioner import (
-    Partitioner,
-    PartitionResult,
-    TPartitioner,
-)
+from executorch.exir.backend.partitioner import Partitioner, PartitionResult
 from executorch.exir.backend.utils import is_identical_graph
 
 from executorch.exir.delegate import executorch_call_delegate, get_lowered_module_name
@@ -32,6 +28,7 @@ from executorch.exir.lowered_backend_module import (
     LoweredBackendModule,
 )
 from executorch.exir.pass_base import ExportPass
+from torch._export.utils import is_buffer, is_param
 from torch.export import ExportedProgram
 
 
@@ -150,18 +147,44 @@ def validation_disabled() -> Generator[None, None, None]:
         _ENABLE_VALIDATION = existing_setting
 
 
-def _partition_and_lower(
+def _get_node_list_with_same_tag(
+    tagged_graph_module: torch.fx.GraphModule,
+    tag: str,
+    owning_program: ExportedProgram,
+) -> List[torch.fx.Node]:
+    """
+    Return a list of nodes with the same tag.
+    """
+    node_list = []
+    for node in tagged_graph_module.graph.nodes:
+        if node.meta.get("delegation_tag", "") == tag:
+            if node.op == "output":
+                raise RuntimeError(f"output node {node} should not be tagged")
+            if node.op == "placeholder":
+                if not is_param(owning_program, node) and not is_buffer(
+                    owning_program, node
+                ):
+                    raise RuntimeError(
+                        f"placeholder node for non-params and non-buffer should not be tagged: {node} "
+                    )
+            node_list.append(node)
+    return node_list
+
+
+def _partition_and_lower_one_graph_module(
     tagged_graph_module: torch.fx.GraphModule,
     partition_result: PartitionResult,
     owning_program: ExportedProgram,
 ) -> torch.fx.GraphModule:
+    """
+    Partitioned and lowered the graph module based on the partition tag, this is to handle one graph module.
+    """
     for tag, delegation_spec in partition_result.partition_tags.items():
         # Create partition with nodes containing this tag. There should only be
         # one contained submodule per tag
-        node_list = []
-        for node in tagged_graph_module.graph.nodes:
-            if node.meta.get("delegation_tag", "") == tag:
-                node_list.append(node)
+        node_list = _get_node_list_with_same_tag(
+            tagged_graph_module, tag, owning_program
+        )
 
         if len(node_list) == 0:
             logging.debug(f"Did not find any nodes for tag {tag}")
@@ -237,9 +260,24 @@ def _partition_and_lower(
                 tagged_graph_module.graph.erase_node(node)
 
         tagged_graph_module.recompile()
+    return tagged_graph_module
+
+
+def _partition_and_lower(
+    tagged_graph_module: torch.fx.GraphModule,
+    partition_result: PartitionResult,
+    owning_program: ExportedProgram,
+) -> torch.fx.GraphModule:
+    """
+    Partitions the graph module into submodules based on tags, and then lowered the nodes with the same tag as one lowered module, including the submodule from control flow
+    """
+
+    partitioned_module = _partition_and_lower_one_graph_module(
+        tagged_graph_module, partition_result, owning_program
+    )
 
     # Recursively partition and lower for submodules
-    for name, submod, _node in get_control_flow_submodules(tagged_graph_module):
+    for name, submod, _node in get_control_flow_submodules(partitioned_module):
         partitioned_submodule = _partition_and_lower(
             submod, partition_result, owning_program
         )
@@ -261,7 +299,7 @@ def _partition_and_lower(
 @to_backend.register
 def _(
     edge_program: ExportedProgram,
-    partitioner: Type[TPartitioner],
+    partitioner_instance: Partitioner,
 ) -> ExportedProgram:
     """
     Add overloaded implementations for to_backend:
@@ -270,7 +308,7 @@ def _(
 
      def to_backend(
          edge_program: ExportedProgram,
-         partitioner: Type[TPartitioner],
+         partitioner: Partitioner,
      ) -> ExportedProgram:
 
     Returns a semantically-equivalent program to the one given as input (represented
@@ -280,19 +318,16 @@ def _(
     Args:
         ExportedProgram: Program in Edge dialect.
 
-        partitioner: An instance of the Partitioner class type, in charge with tagging
-        portions of the input program for delegation. A valid partitioner must have
-        partition_tags: Dict[str, DelegationSpec], where each key is a tag name and the nodes
-        with same tag will be fused a one subgraph and delegated to backend specififed in delegation
-        spec.
+        partitioner: An instance of the partitioner, in charge with tagging
+        portions of the input program for delegation. A valid partitioner must return PartitionerResult
+        including both tagged exported program and partitioner_tag: Dict[str, DelegationSpec], where each key is a tag name and
+        the nodes with same tag will be fused a one subgraph and delegated to backend specififed in delegation spec.
 
 
     Returns:
         ExportedProgram: The input program, with some portions targeted for delegation.
     """
     copied_edge_program = copy.deepcopy(edge_program)
-    # Call the partitioner on the given graph module
-    partitioner_instance: Partitioner = partitioner()
     partitioner_result = partitioner_instance(copied_edge_program)
     tagged_exported_program = partitioner_result.tagged_exported_program
 
@@ -301,13 +336,13 @@ def _(
         assert is_identical_graph(
             tagged_exported_program.graph_module,
             edge_program.graph_module,
-        ), f"The partitioner {partitioner} should not modify the graph module"
+        ), f"The partitioner {partitioner_instance} should not modify the graph module"
     else:
         logging.warning("Disabled validating the partitioner.")
 
     assert (
         partitioner_result.partition_tags is not None
-    ), f"Partitioner {partitioner} needs a `partition_tags` field containing a mapping of tags to delegate spec"
+    ), f"Partitioner {partitioner_instance} needs a `partition_tags` field containing a mapping of tags to delegate spec"
 
     tagged_graph_module = _partition_and_lower(
         tagged_exported_program.graph_module, partitioner_result, edge_program
@@ -319,11 +354,12 @@ def _(
         edge_program, tagged_graph_module
     )
     return ExportedProgram(
-        tagged_graph_module,
-        tagged_graph_module.graph,
-        new_signature,
-        new_state_dict,
-        copy.deepcopy(edge_program.range_constraints),
-        copy.deepcopy(edge_program.equality_constraints),
-        copy.deepcopy(edge_program.module_call_graph),
+        root=tagged_graph_module,
+        graph=tagged_graph_module.graph,
+        graph_signature=new_signature,
+        state_dict=new_state_dict,
+        range_constraints=copy.deepcopy(edge_program.range_constraints),
+        module_call_graph=copy.deepcopy(edge_program.module_call_graph),
+        example_inputs=None,
+        verifier=edge_program.verifier,
     )

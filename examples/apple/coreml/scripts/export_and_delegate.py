@@ -3,17 +3,18 @@
 # Please refer to the license found in the LICENSE file in the root directory of the source tree.
 
 import argparse
+import copy
 
 import pathlib
 import sys
 
 import executorch.exir as exir
-import torch
 
 from executorch.backends.apple.coreml.compiler import CoreMLBackend
 
 from executorch.exir.backend.backend_api import to_backend
 from executorch.exir.backend.compile_spec_schema import CompileSpec
+from executorch.sdk.etrecord import generate_etrecord
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent.parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
@@ -35,6 +36,11 @@ def lower_module_to_coreml(module, compute_units):
     edge = exir.capture(module, example_inputs, _CAPTURE_CONFIG).to_edge(
         _EDGE_COMPILE_CONFIG
     )
+    # All of the subsequent calls on the edge_dialect_graph generated above (such as delegation or
+    # to_executorch()) are done in place and the graph is also modified in place. For debugging purposes
+    # we would like to keep a copy of the original edge dialect graph and hence we create a deepcopy of
+    # it here that will later then be serialized into a etrecord.
+    edge_copy = copy.deepcopy(edge)
 
     lowered_module = to_backend(
         CoreMLBackend.__name__,
@@ -42,23 +48,13 @@ def lower_module_to_coreml(module, compute_units):
         [CompileSpec("compute_units", bytes(compute_units, "utf-8"))],
     )
 
-    return lowered_module
+    return lowered_module, edge_copy
 
 
 def export_lowered_module_to_executorch_program(lowered_module, example_inputs):
-    class CompositeModule(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.lowered_module = lowered_module
-
-        def forward(self, *args):
-            return self.lowered_module(*args)
-
-    composite_model = CompositeModule()
-    composite_model(*example_inputs)
-
+    lowered_module(*example_inputs)
     exec_prog = (
-        exir.capture(composite_model, example_inputs, _CAPTURE_CONFIG)
+        exir.capture(lowered_module, example_inputs, _CAPTURE_CONFIG)
         .to_edge(_EDGE_COMPILE_CONFIG)
         .to_executorch()
     )
@@ -102,6 +98,8 @@ if __name__ == "__main__":
         help=f"Provide compute units. Valid ones: {compute_units}",
     )
 
+    parser.add_argument("--generate_etrecord", action=argparse.BooleanOptionalAction)
+
     parser.add_argument("--save_processed_bytes", action=argparse.BooleanOptionalAction)
 
     args = parser.parse_args()
@@ -118,11 +116,11 @@ if __name__ == "__main__":
             f"Valid compute units are {compute_units}."
         )
 
-    model, example_inputs = EagerModelFactory.create_model(
+    model, example_inputs, _ = EagerModelFactory.create_model(
         *MODEL_NAME_TO_MODEL[args.model_name]
     )
 
-    lowered_module = lower_module_to_coreml(
+    lowered_module, edge_copy = lower_module_to_coreml(
         model,
         args.compute_units,
     )
@@ -133,6 +131,7 @@ if __name__ == "__main__":
     )
 
     save_executorch_program(exec_program, args.model_name, args.compute_units)
+    generate_etrecord(f"{args.model_name}_coreml_etrecord.bin", edge_copy, exec_program)
 
     if args.save_processed_bytes:
         save_processed_bytes(

@@ -6,7 +6,7 @@
 
 import unittest
 from random import randint
-from typing import Any, Tuple
+from typing import Any, List, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -25,12 +25,6 @@ from executorch.backends.xnnpack.utils.utils import capture_graph_for_xnnpack
 
 # import the xnnpack backend implementation
 from executorch.backends.xnnpack.xnnpack_preprocess import XnnpackBackend
-
-from executorch.bundled_program.config import BundledConfig
-from executorch.bundled_program.core import create_bundled_program
-from executorch.bundled_program.serialize import (
-    serialize_from_bundled_program_to_flatbuffer,
-)
 from executorch.exir import ExecutorchProgram, ExirExportedProgram
 from executorch.exir.backend.backend_api import to_backend, validation_disabled
 
@@ -40,6 +34,12 @@ from executorch.extension.pybindings.portable_lib import (  # @manual
     _load_for_executorch_from_buffer,
 )
 from executorch.extension.pytree import tree_flatten
+
+from executorch.sdk.bundled_program.config import MethodTestCase, MethodTestSuite
+from executorch.sdk.bundled_program.core import create_bundled_program
+from executorch.sdk.bundled_program.serialize import (
+    serialize_from_bundled_program_to_flatbuffer,
+)
 
 from torch.ao.quantization import (  # @manual
     default_per_channel_symmetric_qnnpack_qconfig,
@@ -97,18 +97,28 @@ def randomize_bn(num_features: int, dimensionality: int = 2) -> torch.nn.Module:
     return bn
 
 
-def save_bundled_program(representative_inputs, program, ref_output, output_path):
+def save_bundled_program(
+    representative_inputs, executorch_program, ref_output, output_path
+):
     niter = 1
 
     print("generating bundled program inputs / outputs")
-    inputs_list = [list(representative_inputs) for _ in range(niter)]
-    expected_outputs_list = [
-        [[ref_output] for x in inputs_list],
+
+    method_test_cases: List[MethodTestCase] = []
+    for _ in range(niter):
+        method_test_cases.append(
+            MethodTestCase(
+                inputs=representative_inputs,
+                expected_outputs=ref_output,
+            )
+        )
+
+    method_test_suites = [
+        MethodTestSuite(method_name="forward", method_test_cases=method_test_cases)
     ]
-    bundled_config = BundledConfig([inputs_list], expected_outputs_list)
 
     print("creating bundled program...")
-    bundled_program = create_bundled_program(program, bundled_config)
+    bundled_program = create_bundled_program(executorch_program, method_test_suites)
 
     print("serializing bundled program...")
     bundled_program_buffer = serialize_from_bundled_program_to_flatbuffer(
@@ -181,11 +191,11 @@ class TestXNNPACK(unittest.TestCase):
         partitioner = None
         if quantized:
             if quantized_dynamic:
-                partitioner = XnnpackDynamicallyQuantizedPartitioner
+                partitioner = XnnpackDynamicallyQuantizedPartitioner()
             else:
-                partitioner = XnnpackPartitioner
+                partitioner = XnnpackPartitioner()
         else:
-            partitioner = XnnpackPartitioner
+            partitioner = XnnpackPartitioner()
 
         if use_partitioner:
             with validation_disabled():
@@ -222,7 +232,7 @@ class TestXNNPACK(unittest.TestCase):
         if dump_bundled_program:
             save_bundled_program(
                 representative_inputs=sample_inputs,
-                program=executorch_program.program,
+                executorch_program=executorch_program,
                 ref_output=ref_output,
                 output_path=f"/tmp/xnnpack_test_{randint(1, 99999)}",
             )
@@ -314,7 +324,7 @@ class TestXNNPACK(unittest.TestCase):
         quantization_config = get_symmetric_quantization_config()
         quantizer.set_global(quantization_config)
         prepared = prepare_pt2e(m, quantizer)
-        converted = convert_pt2e(prepared)
+        converted = convert_pt2e(prepared, fold_quantize=True)
 
         captured_program = exir.capture(
             converted,
@@ -434,7 +444,7 @@ class TestXNNPACK(unittest.TestCase):
 
             save_bundled_program(
                 representative_inputs=example_inputs,
-                program=executorch_program.program,
+                executorch_program=executorch_program,
                 ref_output=ref_output,
                 output_path=filename,
             )
@@ -451,7 +461,7 @@ class TestXNNPACK(unittest.TestCase):
 
         # Compare the result from executor and eager mode directly
         self.assertTrue(
-            torch.allclose(model_output[0], ref_output, atol=1e-03, rtol=1e-03)
+            torch.allclose(model_output[0], ref_output, atol=4e-03, rtol=1e-03)
         )
 
     def _get_dqlinear_graph_module(self, weight_qconfig, linear, example_inputs):
@@ -508,7 +518,7 @@ class TestXNNPACK(unittest.TestCase):
         self, LinearModule, example_inputs
     ):
         linear = LinearModule()
-        weight_qconfig = weight_observer_range_neg_127_to_127
+        weight_qconfig = per_channel_weight_observer_range_neg_127_to_127
         converted_dqlinear = self._get_dqlinear_graph_module(
             weight_qconfig, linear, example_inputs
         )

@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import List, Optional
+from typing import List, Optional, Type
 
 from executorch.backends.xnnpack.passes.channels_last_tagged_reshape_pass import (
     ChannelsLastTaggedReshapePass,
@@ -25,6 +25,8 @@ from executorch.backends.xnnpack.passes.xnnpack_pass import XNNPACKPass
 from executorch.exir.pass_base import ExportPass
 
 from executorch.exir.passes.const_prop_pass import ConstPropPass
+
+from executorch.exir.program._program import _transform
 from torch._export.pass_base import PassType
 
 from torch.export import ExportedProgram
@@ -32,7 +34,9 @@ from torch.export import ExportedProgram
 
 class XNNPACKPassManager:
     def __init__(
-        self, exported_program: ExportedProgram, passes: Optional[List[PassType]] = None
+        self,
+        exported_program: ExportedProgram,
+        passes: Optional[List[Type[PassType]]] = None,
     ) -> None:
         """
         A helper class to run multiple XNNPACK passes on a program
@@ -75,5 +79,5 @@ class XNNPACKPassManager:
                 raise RuntimeError(
                     f"Expecting ExportPass or ExportPass(), but got pass: {pass_} with type: {type(pass_)}"
                 )
-            ep = ep._transform(transform_pass)
+            ep = _transform(ep, transform_pass)
         return ep

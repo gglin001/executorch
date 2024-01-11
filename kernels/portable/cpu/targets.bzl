@@ -1,4 +1,5 @@
 load("@fbsource//xplat/executorch/build:runtime_wrapper.bzl", "runtime")
+load("@fbsource//xplat/executorch/codegen:codegen.bzl", "et_operator_library", "executorch_generated_lib")
 load("@fbsource//xplat/executorch/kernels/portable:op_registration_util.bzl", "define_op_target", "op_target")
 
 # Operators that are listed in `functions.yaml`, and are thus compatible with
@@ -60,6 +61,7 @@ _ATEN_OPS = (
         deps = [
             "//executorch/runtime/core/exec_aten/util:scalar_type_util",
             "//executorch/runtime/core/exec_aten/util:tensor_util",
+            "//executorch/kernels/portable/cpu/util:index_util",
             "//executorch/kernels/portable/cpu/util:reduce_util",
         ],
     ),
@@ -72,6 +74,7 @@ _ATEN_OPS = (
     op_target(
         name = "op_arange",
         deps = [
+            "//executorch/kernels/portable/cpu/util:kernel_ops_util",
             "//executorch/runtime/core/exec_aten/util:scalar_type_util",
             "//executorch/runtime/core/exec_aten/util:tensor_util",
             ":scalar_utils",
@@ -202,7 +205,10 @@ _ATEN_OPS = (
     ),
     op_target(
         name = "op_constant_pad_nd",
-        deps = [":scalar_utils"],
+        deps = [
+            ":scalar_utils",
+            "//executorch/kernels/portable/cpu/util:kernel_ops_util",
+        ],
     ),
     op_target(
         name = "op_convolution",
@@ -237,6 +243,7 @@ _ATEN_OPS = (
         deps = [
             "//executorch/runtime/core/exec_aten/util:scalar_type_util",
             "//executorch/runtime/core/exec_aten/util:tensor_util",
+            "//executorch/kernels/portable/cpu/util:kernel_ops_util",
         ],
     ),
     op_target(
@@ -255,6 +262,9 @@ _ATEN_OPS = (
     ),
     op_target(
         name = "op_embedding",
+        deps = [
+            "//executorch/kernels/portable/cpu/util:kernel_ops_util",
+        ],
     ),
     op_target(
         name = "op_eq",
@@ -284,6 +294,7 @@ _ATEN_OPS = (
         deps = [
             "//executorch/runtime/core/exec_aten/util:scalar_type_util",
             "//executorch/runtime/core/exec_aten/util:tensor_util",
+            "//executorch/kernels/portable/cpu/util:copy_ops_util",
             "//executorch/kernels/portable/cpu/util:repeat_util",
             ":scalar_utils",
         ],
@@ -352,6 +363,7 @@ _ATEN_OPS = (
     op_target(
         name = "op_glu",
         deps = [
+            "//executorch/kernels/portable/cpu/util:activation_ops_util",
             "//executorch/runtime/core/exec_aten/util:scalar_type_util",
             "//executorch/runtime/core/exec_aten/util:tensor_util",
         ],
@@ -482,6 +494,7 @@ _ATEN_OPS = (
         name = "op_masked_fill",
         deps = [
             "//executorch/kernels/portable/cpu/util:broadcast_util",
+            "//executorch/kernels/portable/cpu/util:kernel_ops_util",
             ":scalar_utils",
         ],
     ),
@@ -490,6 +503,7 @@ _ATEN_OPS = (
         deps = [
             "//executorch/runtime/core/exec_aten/util:scalar_type_util",
             "//executorch/runtime/core/exec_aten/util:tensor_util",
+            "//executorch/kernels/portable/cpu/util:index_util",
             "//executorch/kernels/portable/cpu/util:reduce_util",
         ],
     ),
@@ -504,6 +518,7 @@ _ATEN_OPS = (
         deps = [
             "//executorch/runtime/core/exec_aten/util:scalar_type_util",
             "//executorch/runtime/core/exec_aten/util:tensor_util",
+            "//executorch/kernels/portable/cpu/util:kernel_ops_util",
             "//executorch/kernels/portable/cpu/util:reduce_util",
         ],
     ),
@@ -512,6 +527,7 @@ _ATEN_OPS = (
         deps = [
             "//executorch/runtime/core/exec_aten/util:scalar_type_util",
             "//executorch/runtime/core/exec_aten/util:tensor_util",
+            "//executorch/kernels/portable/cpu/util:index_util",
             "//executorch/kernels/portable/cpu/util:reduce_util",
         ],
     ),
@@ -568,6 +584,8 @@ _ATEN_OPS = (
         name = "op_nonzero",
         deps = [
             ":scalar_utils",
+            "//executorch/kernels/portable/cpu/util:index_util",
+            "//executorch/kernels/portable/cpu/util:kernel_ops_util",
         ],
     ),
     op_target(
@@ -654,8 +672,10 @@ _ATEN_OPS = (
     op_target(
         name = "op_select_scatter",
         deps = [
+            "//executorch/kernels/portable/cpu/util:kernel_ops_util",
             "//executorch/runtime/core/exec_aten/util:scalar_type_util",
             "//executorch/runtime/core/exec_aten/util:tensor_util",
+            "//executorch/kernels/portable/cpu/util:index_util",
         ],
     ),
     op_target(
@@ -686,10 +706,15 @@ _ATEN_OPS = (
         name = "op_slice_copy",
         deps = [
             "//executorch/kernels/portable/cpu/util:copy_ops_util",
+            "//executorch/kernels/portable/cpu/util:index_util",
         ],
     ),
     op_target(
         name = "op_slice_scatter",
+        deps = [
+            "//executorch/kernels/portable/cpu/util:index_util",
+            "//executorch/kernels/portable/cpu/util:kernel_ops_util",
+        ],
     ),
     op_target(
         name = "op_softmax",
@@ -702,6 +727,9 @@ _ATEN_OPS = (
     ),
     op_target(
         name = "op_split_copy",
+        deps = [
+            "//executorch/kernels/portable/cpu/util:copy_ops_util",
+        ],
     ),
     op_target(
         name = "op_split_with_sizes_copy",
@@ -762,6 +790,9 @@ _ATEN_OPS = (
     ),
     op_target(
         name = "op_to_copy",
+        deps = [
+            "//executorch/kernels/portable/cpu/util:copy_ops_util",
+        ],
     ),
     op_target(
         name = "op_transpose_copy",
@@ -775,9 +806,15 @@ _ATEN_OPS = (
     ),
     op_target(
         name = "op_unbind_copy",
+        deps = [
+            "//executorch/kernels/portable/cpu/util:copy_ops_util",
+        ],
     ),
     op_target(
         name = "op_unsqueeze_copy",
+        deps = [
+            "//executorch/kernels/portable/cpu/util:copy_ops_util",
+        ],
     ),
     op_target(
         name = "op_var",
@@ -789,6 +826,9 @@ _ATEN_OPS = (
     ),
     op_target(
         name = "op_view_copy",
+        deps = [
+            "//executorch/kernels/portable/cpu/util:copy_ops_util",
+        ],
     ),
     op_target(
         name = "op_where",
@@ -821,7 +861,7 @@ _CUSTOM_OPS = (
     ),
 )
 
-def define_common_targets():
+def define_common_targets(is_fbcode = False):
     """Defines targets that should be shared between fbcode and xplat.
 
     The directory containing this targets.bzl file should also contain both
@@ -878,11 +918,30 @@ def define_common_targets():
         ],
     )
 
+    dtype_selective_build_lib = native.read_config("executorch", "dtype_selective_build_lib", None)
+    if dtype_selective_build_lib != None:
+        # retrieve selected_op_variants.h from codegen
+        genrule_name = dtype_selective_build_lib + "_et_op_dtype_gen[selected_op_variants]"
+        runtime.cxx_library(
+            name = "dtype_headers",
+            srcs = [],
+            exported_headers = {
+                "selected_op_variants.h": genrule_name,
+            },
+            visibility = [
+                "//executorch/...",
+                "@EXECUTORCH_CLIENTS",
+            ],
+        )
+
     # Only for use by targets in this directory.
     runtime.cxx_library(
         name = "scalar_utils",
         srcs = [],
-        exported_headers = ["scalar_utils.h"],
+        # include dtype selective build flag and header
+        exported_preprocessor_flags = ["-DEXECUTORCH_SELECTIVE_BUILD_DTYPE"] if dtype_selective_build_lib != None else [],
+        exported_headers = ["scalar_utils.h", "selective_build.h"],
+        exported_deps = [":dtype_headers"] if dtype_selective_build_lib != None else [],
         visibility = [
             "//executorch/kernels/portable/cpu/...",
             "//executorch/kernels/optimized/cpu/...",
@@ -893,3 +952,45 @@ def define_common_targets():
             "//executorch/runtime/core/exec_aten/util:scalar_type_util",
         ],
     )
+
+    # dtype selective build test artifacts
+    if is_fbcode:
+        et_operator_library(
+            name = "add_model",
+            model = "fbcode//executorch/test/models:exported_programs[ModuleAdd.pte]",
+        )
+
+        executorch_generated_lib(
+            name = "add_model_lib",
+            functions_yaml_target = "//executorch/kernels/portable:functions.yaml",
+            kernel_deps = ["//executorch/kernels/portable:operators"],
+            deps = [":add_model"],
+            visibility = ["//executorch/kernels/..."],
+        )
+
+        runtime.cxx_library(
+            name = "dtype_headers_TEST_ONLY",
+            srcs = [],
+            exported_headers = {
+                "selected_op_variants.h": ":add_model_lib_et_op_dtype_gen[selected_op_variants]",
+            },
+            visibility = [
+                "//executorch/...",
+                "@EXECUTORCH_CLIENTS",
+            ],
+        )
+
+        runtime.cxx_library(
+            name = "scalar_utils_TEST_ONLY",
+            srcs = [],
+            exported_preprocessor_flags = ["-DEXECUTORCH_SELECTIVE_BUILD_DTYPE"],
+            exported_headers = ["scalar_utils.h", "selective_build.h"],
+            exported_deps = [":dtype_headers_TEST_ONLY"],
+            visibility = [
+                "//executorch/kernels/...",
+                "@EXECUTORCH_CLIENTS",
+            ],
+            deps = [
+                "//executorch/runtime/core/exec_aten/util:scalar_type_util",
+            ],
+        )

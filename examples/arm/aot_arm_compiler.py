@@ -13,7 +13,7 @@ import logging
 import torch
 import torch._export as export
 
-from executorch.backends.arm.arm_backend import ArmPartitioner
+from executorch.backends.arm.arm_partitioner import ArmPartitioner
 from executorch.exir import EdgeCompileConfig
 
 from ..portable.utils import export_to_edge, save_pte_program
@@ -38,6 +38,34 @@ class AddModule(torch.nn.Module):
     can_delegate = True
 
 
+class AddModule2(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x, y):
+        return x + y
+
+    example_input = (
+        torch.ones(5, dtype=torch.int32),
+        torch.ones(5, dtype=torch.int32),
+    )
+    can_delegate = True
+
+
+class AddModule3(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x, y):
+        return (x + y, x + x)
+
+    example_input = (
+        torch.ones(5, dtype=torch.int32),
+        torch.ones(5, dtype=torch.int32),
+    )
+    can_delegate = True
+
+
 class SoftmaxModule(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -53,6 +81,8 @@ class SoftmaxModule(torch.nn.Module):
 
 models = {
     "add": AddModule,
+    "add2": AddModule2,
+    "add3": AddModule3,
     "softmax": SoftmaxModule,
 }
 
@@ -103,7 +133,7 @@ if __name__ == "__main__":
     logging.info(f"Exported graph:\n{edge.exported_program().graph}")
 
     if args.delegate is True:
-        edge = edge.to_backend(ArmPartitioner)
+        edge = edge.to_backend(ArmPartitioner())
         logging.info(f"Lowered graph:\n{edge.exported_program().graph}")
 
     exec_prog = edge.to_executorch()

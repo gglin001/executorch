@@ -1,5 +1,7 @@
 load("@fbcode_macros//build_defs:python_library.bzl", "python_library")
 
+oncall("executorch")
+
 python_library(
     name = "etrecord",
     srcs = [
@@ -10,5 +12,7 @@ python_library(
         "//executorch/exir:lib",
         "//executorch/exir/emit:emit",
         "//executorch/exir/serde:serialize",
+        "//executorch/sdk/bundled_program:core",
+        "//executorch/sdk/bundled_program/schema:bundled_program_schema_py",
     ],
 )

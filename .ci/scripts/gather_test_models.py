@@ -13,13 +13,7 @@ from typing import Any
 from examples.models import MODEL_NAME_TO_MODEL
 from examples.xnnpack import MODEL_NAME_TO_OPTIONS
 
-# NB: Skip buck2 on MacOS to cut down the number of combinations we
-# need to run there as the number of MacOS runner is limited. Buck2
-# build and test has already been covered on Linux
-BUILD_TOOLS = {
-    "buck2": {"linux"},
-    "cmake": {"linux", "macos"},
-}
+
 DEFAULT_RUNNERS = {
     "linux": "linux.2xlarge",
     "macos": "macos-m1-12",
@@ -44,7 +38,6 @@ def parse_args() -> Any:
     parser.add_argument(
         "--target-os",
         type=str,
-        choices=["linux", "macos"],
         default="linux",
         help="the target OS",
     )
@@ -94,35 +87,40 @@ def export_models_for_ci() -> dict[str, dict]:
     # This is the JSON syntax for configuration matrix used by GitHub
     # https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs
     models = {"include": []}
-    for (name, build_tool, q_config, d_config) in itertools.product(
-        MODEL_NAME_TO_MODEL.keys(), BUILD_TOOLS.keys(), [False, True], [False, True]
+
+    # Add MobileNet v3 for BUCK2 E2E validation (linux only)
+    if target_os == "linux":
+        for backend in ["portable", "xnnpack-quantization-delegation"]:
+            record = {
+                "build-tool": "buck2",
+                "model": "mv3",
+                "backend": backend,
+                "runner": "linux.2xlarge",
+            }
+            models["include"].append(record)
+
+    # Add all models for CMake E2E validation
+    # CMake supports both linux and macos
+    for (name, backend) in itertools.product(
+        MODEL_NAME_TO_MODEL.keys(), ["portable", "xnnpack"]
     ):
         if not model_should_run_on_event(name, event):
             continue
 
-        if q_config and (
-            (name not in MODEL_NAME_TO_OPTIONS)
-            or (not MODEL_NAME_TO_OPTIONS[name].quantization)
-        ):
-            continue
+        if backend == "xnnpack":
+            if name not in MODEL_NAME_TO_OPTIONS:
+                continue
+            if MODEL_NAME_TO_OPTIONS[name].quantization:
+                backend += "-quantization"
 
-        if d_config and (
-            (name not in MODEL_NAME_TO_OPTIONS)
-            or (not MODEL_NAME_TO_OPTIONS[name].delegation)
-        ):
-            continue
-
-        if target_os not in BUILD_TOOLS[build_tool]:
-            continue
+            if MODEL_NAME_TO_OPTIONS[name].delegation:
+                backend += "-delegation"
 
         record = {
-            "build-tool": build_tool,
+            "build-tool": "cmake",
             "model": name,
-            "xnnpack_quantization": q_config,
-            "xnnpack_delegation": d_config,
+            "backend": backend,
             "runner": DEFAULT_RUNNERS.get(target_os, "linux.2xlarge"),
-            # demo_backend_delegation test only supports add_mul model
-            "demo_backend_delegation": name == "add_mul",
         }
 
         # NB: Some model requires much bigger Linux runner to avoid

@@ -17,8 +17,10 @@ def define_common_targets():
     executorch_generated_lib(
         name = "select_all_lib",
         functions_yaml_target = "//executorch/kernels/portable:functions.yaml",
-        deps = [
+        kernel_deps = [
             "//executorch/kernels/portable:operators",
+        ],
+        deps = [
             ":select_all_ops",
         ],
     )
@@ -35,10 +37,33 @@ def define_common_targets():
     executorch_generated_lib(
         name = "select_ops_in_list_lib",
         functions_yaml_target = "//executorch/kernels/portable:functions.yaml",
-        deps = [
+        kernel_deps = [
             "//executorch/kernels/portable:operators",
+        ],
+        deps = [
             ":select_ops_in_list",
         ],
+    )
+
+    # Select a dictionary of ops with kernel metadata
+    et_operator_library(
+        name = "select_ops_in_dict",
+        ops_dict = {
+            "aten::add.out": ["v1/3;0,1", "v1/6;0,1"],  # int, float
+            "aten::mm.out": [],  # all dtypes
+        },
+    )
+
+    executorch_generated_lib(
+        name = "select_ops_in_dict_lib",
+        functions_yaml_target = "//executorch/kernels/portable:functions.yaml",
+        kernel_deps = [
+            "//executorch/kernels/portable:operators",
+        ],
+        deps = [
+            ":select_ops_in_dict",
+        ],
+        visibility = ["//executorch/..."],
     )
 
     # Select all ops from a yaml file
@@ -50,15 +75,39 @@ def define_common_targets():
     executorch_generated_lib(
         name = "select_ops_from_yaml_lib",
         custom_ops_yaml_target = "//executorch/examples/portable/custom_ops:custom_ops.yaml",
-        deps = [
+        kernel_deps = [
             "//executorch/examples/portable/custom_ops:custom_ops_1",
             "//executorch/examples/portable/custom_ops:custom_ops_2",
+        ],
+        deps = [
             ":select_ops_from_yaml",
         ],
     )
 
     # Select all ops from a given model
     # TODO(larryliu0820): Add this
+
+    if not runtime.is_oss:
+        runtime.genrule(
+            name = "add_mul_model",
+            outs = {"add_mul": ["add_mul.pte"]},
+            cmd = "$(exe fbcode//executorch/examples/portable/scripts:export) --model_name add_mul --output_dir $OUT",
+            macros_only = False,
+            visibility = ["//executorch/..."],
+        )
+
+        et_operator_library(
+            name = "select_ops_from_model",
+            model = ":add_mul_model[add_mul]",
+        )
+
+        executorch_generated_lib(
+            name = "select_ops_from_model_lib",
+            functions_yaml_target = "//executorch/kernels/portable:functions.yaml",
+            kernel_deps = ["//executorch/kernels/portable:operators"],
+            deps = [":select_ops_from_model"],
+            visibility = ["//executorch/kernels/..."],
+        )
 
     # ~~~ Test binary for selective build ~~~
     select_ops = native.read_config("executorch", "select_ops", None)
@@ -67,8 +116,12 @@ def define_common_targets():
         lib.append(":select_all_lib")
     elif select_ops == "list":
         lib.append(":select_ops_in_list_lib")
+    elif select_ops == "dict":
+        lib.append(":select_ops_in_dict_lib")
     elif select_ops == "yaml":
         lib.append(":select_ops_from_yaml_lib")
+    elif select_ops == "model":
+        lib.append(":select_ops_from_model_lib")
     runtime.cxx_binary(
         name = "selective_build_test",
         srcs = [],

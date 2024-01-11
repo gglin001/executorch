@@ -1,5 +1,7 @@
 load("@fbcode_macros//build_defs:python_library.bzl", "python_library")
 
+oncall("executorch")
+
 python_library(
     name = "lib",
     srcs = [
@@ -19,7 +21,6 @@ python_library(
     deps = [
         "fbsource//third-party/pypi/typing-extensions:typing-extensions",
         "//caffe2:torch",
-        "//caffe2/functorch:functorch_src",
         "//executorch/exir:delegate",
         "//executorch/exir:error",
         "//executorch/exir:memory",

@@ -1,4 +1,4 @@
-load("@fbsource//xplat/executorch/build:runtime_wrapper.bzl", "get_default_executorch_platforms", "runtime")
+load("@fbsource//xplat/executorch/build:runtime_wrapper.bzl", "get_default_executorch_platforms", "runtime", "struct_to_json")
 
 # Headers that declare the function signatures of the C++ functions that
 # map to entries in functions.yaml and custom_ops.yaml.
@@ -44,6 +44,7 @@ CUSTOM_OPS_SCHEMA_REGISTRATION_SOURCES = [
 def et_operator_library(
         name,
         ops = [],
+        ops_dict = {},
         model = None,
         include_all_operators = False,
         ops_schema_yaml_target = None,
@@ -59,6 +60,11 @@ def et_operator_library(
     if ops:
         genrule_cmd.append(
             "--root_ops=" + ",".join(ops),
+        )
+    if ops_dict:
+        ops_dict_json = struct_to_json(ops_dict)
+        genrule_cmd.append(
+            "--ops_dict='{}'".format(ops_dict_json),
         )
     if model:
         genrule_cmd.append(
@@ -315,6 +321,7 @@ def exir_custom_ops_aot_lib(
             supports_python_dlopen = True,
             platforms = platforms,
             compiler_flags = compiler_flags,
+            force_static = False,
         )
 
 def executorch_generated_lib(
@@ -333,7 +340,8 @@ def executorch_generated_lib(
         xplat_deps = [],
         fbcode_deps = [],
         platforms = get_default_executorch_platforms(),
-        compiler_flags = []):
+        compiler_flags = [],
+        kernel_deps = []):
     """Emits 0-3 C++ library targets (in fbcode or xplat) containing code to
     dispatch the operators specified in the provided yaml files.
 
@@ -436,6 +444,21 @@ def executorch_generated_lib(
         platforms = platforms,
     )
 
+    # genrule to generate selected_op_variants.h from selected_operators.yaml above
+    oplist_header_name = name + "_et_op_dtype_gen"
+    runtime.genrule(
+        name = oplist_header_name,
+        macros_only = False,
+        cmd = ("$(exe //executorch/codegen/tools:gen_selected_op_variants) " +
+               "--yaml_file_path $(location :{}[selected_operators.yaml]) " +
+               "--output_dir $OUT").format(oplist_dir_name),
+        outs = {"selected_op_variants": ["selected_op_variants.h"]},
+        default_outs = ["."],
+        platforms = platforms,
+        visibility = visibility,
+        _is_external_target = True,
+    )
+
     # codegen genrule(s). For ATen mode we expect two genrules, one for ATen ops one for custom ops.
     for genrule_name in genrules:
         genrules[genrule_name]["cmd"].append(
@@ -455,6 +478,7 @@ def executorch_generated_lib(
     # along with headers declaring custom ops `Functions.h`, `NativeFunctions.h` and `UnboxingFunctions.h`.
     header_lib = name + "_headers"
     if header_lib in libs:
+        libs[header_lib]["headers"]["selected_op_variants.h"] = ":{}[selected_op_variants]".format(oplist_header_name)
         runtime.cxx_library(
             name = header_lib,
             srcs = [],
@@ -497,7 +521,7 @@ def executorch_generated_lib(
                 "//executorch/kernels/prim_ops:prim_ops_registry" + aten_suffix,
                 "//executorch/runtime/core:evalue" + aten_suffix,
                 "//executorch/codegen:macros",
-            ] + deps,
+            ] + deps + kernel_deps,
             exported_deps = [
                 "//executorch/runtime/core/exec_aten:lib" + aten_suffix,
                 "//executorch/runtime/kernel:kernel_runtime_context" + aten_suffix,

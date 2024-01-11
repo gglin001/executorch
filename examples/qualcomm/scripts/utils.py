@@ -6,6 +6,7 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +14,8 @@ import numpy as np
 import torch
 from executorch.backends.qualcomm.partition.qnn_partitioner import QnnPartitioner
 from executorch.backends.qualcomm.qnn_quantizer import (
-    get_default_qnn_ptq_config,
+    get_default_16bit_qnn_ptq_config,
+    get_default_8bit_qnn_ptq_config,
     QnnQuantizer,
 )
 from executorch.backends.qualcomm.utils.utils import (
@@ -35,6 +37,7 @@ class SimpleADB:
         device_id,
         soc_model,
         host_id=None,
+        error_only=False,
     ):
         self.qnn_sdk = qnn_sdk
         self.artifact_path = artifact_path
@@ -46,11 +49,13 @@ class SimpleADB:
         self.input_list_filename = "input_list.txt"
         self.output_folder = f"{self.workspace}/outputs"
         arch_table = {
+            "SM8650": "75",
             "SM8550": "73",
             "SM8475": "69",
             "SM8450": "69",
         }
         self.soc_model = arch_table[soc_model]
+        self.error_only = error_only
 
     def _adb(self, cmd):
         if not self.host_id:
@@ -58,7 +63,10 @@ class SimpleADB:
         else:
             cmds = ["adb", "-H", self.host_id, "-s", self.device_id]
         cmds.extend(cmd)
-        subprocess.run(cmds)
+
+        subprocess.run(
+            cmds, stdout=subprocess.DEVNULL if self.error_only else sys.stdout
+        )
 
     def push(self, inputs, input_list):
         self._adb(["shell", f"rm -rf {self.workspace}"])
@@ -84,6 +92,7 @@ class SimpleADB:
             ),
             f"{self.qnn_sdk}/lib/aarch64-android/libQnnSystem.so",
             f"{self.artifact_path}/examples/qualcomm/qnn_executor_runner",
+            f"{self.artifact_path}/backends/qualcomm/libqnn_executorch_backend.so",
             input_list_file,
         ]:
             self._adb(["push", artifact, self.workspace])
@@ -128,34 +137,38 @@ def build_executorch_binary(
     file_name,
     dataset,
     use_fp16=False,
+    use_16bit_quant=False,
     custom_annotations=(),
 ):
     if not use_fp16:
         quantizer = QnnQuantizer()
         quantizer.add_custom_quant_annotations(custom_annotations)
-        quant_annotation_config = get_default_qnn_ptq_config(
-            enable_per_channel_conv_quant=True
-        )
-        quantizer.set_global_op_quant_config(quant_annotation_config)
+        if use_16bit_quant:
+            quantizer.add_16bit_quant_ops(quantizer.SUPPORTED_OPS)
+            quantizer.set_bit16_op_quant_config(get_default_16bit_qnn_ptq_config())
+        else:
+            quantizer.set_bit8_op_quant_config(get_default_8bit_qnn_ptq_config())
 
         captured_model = torch._export.capture_pre_autograd_graph(model, inputs)
         annotated_model = prepare_pt2e(captured_model, quantizer)
         print("Quantizing the model...")
         # calibration
         for data in dataset:
-            annotated_model(data)
+            annotated_model(*data)
         quantized_model = convert_pt2e(annotated_model)
+
         edge_prog = capture_program(quantized_model, inputs)
     else:
         edge_prog = capture_program(model, inputs)
 
     arch_table = {
+        "SM8650": SoCModel.SM8650,
         "SM8550": SoCModel.SM8550,
         "SM8475": SoCModel.SM8475,
         "SM8450": SoCModel.SM8450,
     }
 
-    QnnPartitioner.set_compiler_spec(
+    qnn_partitioner = QnnPartitioner(
         generate_qnn_executorch_compiler_spec(
             is_fp16=use_fp16,
             soc_model=arch_table[soc_model],
@@ -163,7 +176,7 @@ def build_executorch_binary(
             saver=False,
         )
     )
-    edge_prog.exported_program = to_backend(edge_prog.exported_program, QnnPartitioner)
+    edge_prog.exported_program = to_backend(edge_prog.exported_program, qnn_partitioner)
     edge_prog.exported_program.graph_module.graph.print_tabular()
     exec_prog = edge_prog.to_executorch()
     with open(f"{file_name}.pte", "wb") as file:

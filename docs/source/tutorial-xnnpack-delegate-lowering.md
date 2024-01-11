@@ -34,7 +34,7 @@ sample_inputs = (torch.randn(1, 3, 224, 224), )
 
 edge = to_edge(export(mobilenet_v2, sample_inputs))
 
-edge = edge.to_backend(XnnpackPartitioner)
+edge = edge.to_backend(XnnpackPartitioner())
 ```
 
 We will go through this example with the [MobileNetV2](https://pytorch.org/hub/pytorch_vision_mobilenet_v2/) pretrained model downloaded from the TorchVision library. The flow of lowering a model starts after exporting the model `to_edge`. We call the `to_backend` api with the `XnnpackPartitioner`. The partitioner identifies the subgraphs suitable for XNNPACK backend delegate to consume. Afterwards, the identified subgraphs will be serialized with the XNNPACK Delegate flatbuffer schema and each subgraph will be replaced with a call to the XNNPACK Delegate.
@@ -48,12 +48,12 @@ GraphModule(
 
 def forward(self, arg314_1):
     lowered_module_0 = self.lowered_module_0
-    executorch_call_delegate = torch.ops.executorch_call_delegate(lowered_module_0, arg314_1);  lowered_module_0 = arg314_1 = None
+    executorch_call_delegate = torch.ops.higher_order.executorch_call_delegate(lowered_module_0, arg314_1);  lowered_module_0 = arg314_1 = None
     getitem = executorch_call_delegate[0];  executorch_call_delegate = None
     aten_view_copy_default = executorch_exir_dialects_edge__ops_aten_view_copy_default(getitem, [1, 1280]);  getitem = None
     aten_clone_default = executorch_exir_dialects_edge__ops_aten_clone_default(aten_view_copy_default);  aten_view_copy_default = None
     lowered_module_1 = self.lowered_module_1
-    executorch_call_delegate_1 = torch.ops.executorch_call_delegate(lowered_module_1, aten_clone_default);  lowered_module_1 = aten_clone_default = None
+    executorch_call_delegate_1 = torch.ops.higher_order.executorch_call_delegate(lowered_module_1, aten_clone_default);  lowered_module_1 = aten_clone_default = None
     getitem_1 = executorch_call_delegate_1[0];  executorch_call_delegate_1 = None
     return (getitem_1,)
 ```
@@ -112,7 +112,7 @@ Quantization requires a two stage export. First we use the `capture_pre_autograd
 # Continued from earlier...
 edge = to_edge(export(quantized_mobilenetv2, sample_inputs), compile_config=EdgeCompileConfig(_check_ir_validity=False))
 
-edge = edge.to_backend(XnnpackPartitioner)
+edge = edge.to_backend(XnnpackPartitioner())
 
 exec_prog = edge.to_executorch()
 

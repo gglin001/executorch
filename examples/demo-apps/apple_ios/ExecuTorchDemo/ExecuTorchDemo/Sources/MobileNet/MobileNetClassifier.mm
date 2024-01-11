@@ -8,7 +8,7 @@
 
 #import "MobileNetClassifier.h"
 
-#include "Module.h"
+#import <executorch/extension/runner/module/module.h>
 
 using namespace ::torch::executor;
 
@@ -18,7 +18,7 @@ const int32_t kSize = 224;
 const int32_t kChannels = 3;
 
 @implementation ETMobileNetClassifier {
-  std::unique_ptr<demo::Module> _module;
+  std::unique_ptr<Module> _module;
 }
 
 - (nullable instancetype)initWithFilePath:(NSString*)filePath
@@ -26,7 +26,7 @@ const int32_t kChannels = 3;
   self = [super init];
   if (self) {
     try {
-      _module = std::make_unique<demo::Module>(filePath.UTF8String);
+      _module = std::make_unique<Module>(filePath.UTF8String);
     } catch (const std::exception& exception) {
       if (error) {
         *error = [NSError
@@ -50,11 +50,8 @@ const int32_t kChannels = 3;
                outputSize:(NSInteger)outputSize
                     error:(NSError**)error {
   int32_t sizes[] = {1, kChannels, kSize, kSize};
-  uint8_t order[] = {0, 1, 2, 3};
-  int32_t strides[] = {kChannels * kSize * kSize, kSize * kSize, kSize, 1};
-  TensorImpl tensorImpl(
-      ScalarType::Float, std::size(sizes), sizes, input, order, strides);
-  std::vector<EValue> inputs = {EValue(Tensor(&tensorImpl))};
+  TensorImpl tensorImpl(ScalarType::Float, std::size(sizes), sizes, input);
+  std::vector<EValue> inputs{EValue(Tensor(&tensorImpl))};
   std::vector<EValue> outputs;
 
   const auto torchError = _module->forward(inputs, outputs);

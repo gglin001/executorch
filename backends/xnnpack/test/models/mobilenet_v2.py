@@ -9,6 +9,7 @@ import unittest
 import torch
 import torchvision.models as models
 from executorch.backends.xnnpack.test.tester import Tester
+from executorch.backends.xnnpack.test.tester.tester import Quantize
 from torchvision.models.mobilenetv2 import MobileNet_V2_Weights
 
 
@@ -35,7 +36,7 @@ class TestMobileNetV2(unittest.TestCase):
             .to_edge()
             .check(list(self.all_operators))
             .partition()
-            .check(["torch.ops.executorch_call_delegate"])
+            .check(["torch.ops.higher_order.executorch_call_delegate"])
             .check_not(list(self.all_operators))
             .to_executorch()
             .serialize()
@@ -51,12 +52,12 @@ class TestMobileNetV2(unittest.TestCase):
 
         (
             Tester(self.mv2, self.model_inputs)
-            .quantize()
+            .quantize(Quantize(calibrate=False))
             .export()
             .to_edge()
             .check(list(ops_after_quantization))
             .partition()
-            .check(["torch.ops.executorch_call_delegate"])
+            .check(["torch.ops.higher_order.executorch_call_delegate"])
             .check_not(list(ops_after_quantization))
             .to_executorch()
             .serialize()

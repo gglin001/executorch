@@ -39,16 +39,18 @@ ScalarType get_compute_type(ScalarType a_type, ScalarType b_type) {
 
 Tensor&
 div_out(RuntimeContext& ctx, const Tensor& a, const Tensor& b, Tensor& out) {
-  (void)ctx;
-
-  resize_to_broadcast_target_size(a, b, out);
+  ET_KERNEL_CHECK(
+      ctx,
+      resize_to_broadcast_target_size(a, b, out) == Error::Ok,
+      InvalidArgument,
+      out);
 
   ScalarType a_type = a.scalar_type();
   ScalarType b_type = b.scalar_type();
   ScalarType common_type = get_compute_type(a_type, b_type);
   ScalarType out_type = out.scalar_type();
 
-  ET_CHECK(canCast(common_type, out_type));
+  ET_KERNEL_CHECK(ctx, canCast(common_type, out_type), InvalidArgument, out);
 
   ET_SWITCH_REAL_TYPES_AND(Bool, a_type, ctx, "div.out", CTYPE_A, [&]() {
     ET_SWITCH_REAL_TYPES_AND(Bool, b_type, ctx, "div.out", CTYPE_B, [&]() {
@@ -79,9 +81,11 @@ Tensor& div_out_mode(
     const Tensor& b,
     exec_aten::optional<exec_aten::string_view> mode,
     Tensor& out) {
-  (void)ctx;
-
-  resize_to_broadcast_target_size(a, b, out);
+  ET_KERNEL_CHECK(
+      ctx,
+      resize_to_broadcast_target_size(a, b, out) == Error::Ok,
+      InvalidArgument,
+      out);
 
   ScalarType a_type = a.scalar_type();
   ScalarType b_type = b.scalar_type();

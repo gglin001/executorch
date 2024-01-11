@@ -21,11 +21,11 @@ COREML=OFF
 MPS=OFF
 XNNPACK=OFF
 HEADERS_PATH="include"
-EXECUTORCH_FRAMEWORK="executorch:libexecutorch.a,libextension_data_loader.a:$HEADERS_PATH"
+EXECUTORCH_FRAMEWORK="executorch:libexecutorch.a,libextension_data_loader.a,libextension_runner_module.a:$HEADERS_PATH"
 PORTABLE_FRAMEWORK="portable_backend:libportable_kernels.a,libportable_ops_lib.a:"
 COREML_FRAMEWORK="coreml_backend:libcoremldelegate.a:"
 MPS_FRAMEWORK="mps_backend:libmpsdelegate.a:"
-XNNPACK_FRAMEWORK="xnnpack_backend:libXNNPACK.a,libclog.a,libcpuinfo.a,libpthreadpool.a,libxnnpack_backend.a:"
+XNNPACK_FRAMEWORK="xnnpack_backend:libXNNPACK.a,libcpuinfo.a,libpthreadpool.a,libxnnpack_backend.a:"
 
 usage() {
   echo "Usage: $0 [SOURCE_ROOT_DIR] [OPTIONS]"
@@ -112,6 +112,7 @@ cmake_build() {
         -DPYTHON_EXECUTABLE="$PYTHON" \
         -DFLATC_EXECUTABLE="$FLATC" \
         -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON \
+        -DEXECUTORCH_BUILD_EXTENSION_RUNNER_MODULE=ON \
         -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY="$(pwd)" \
         -DIOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
         -DEXECUTORCH_BUILD_COREML=$COREML \
@@ -134,6 +135,7 @@ mkdir -p "$HEADERS_PATH"
   //runtime/executor:program \
   //extension/data_loader: \
   //extension/memory_allocator: \
+  //extension/runner/module: \
 | rsync -av --files-from=- "$SOURCE_ROOT_DIR" "$HEADERS_PATH/executorch"
 
 echo "Creating frameworks"

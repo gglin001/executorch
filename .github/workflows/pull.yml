@@ -20,21 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v3
         with:
-          submodules: 'true'
+          submodules: 'false'
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          cache: pip
       - name: Extract the list of models to test
         id: gather-models
         run: |
           set -eux
-
-          source .ci/scripts/utils.sh
-          # This is a simple Python script but as it tries to import executorch.examples.models,
-          # it requires a whole bunch of ExecuTorch dependencies on the Docker image
-          install_pip_dependencies
-          install_executorch
 
           PYTHONPATH="${PWD}" python .ci/scripts/gather_test_models.py --event "${GITHUB_EVENT_NAME}"
 
@@ -58,13 +51,12 @@ jobs:
 
         MODEL_NAME=${{ matrix.model }}
         BUILD_TOOL=${{ matrix.build-tool }}
-        XNNPACK_QUANTIZATION=${{ matrix.xnnpack_quantization }}
-        XNNPACK_DELEGATION=${{ matrix.delegation }}
+        BACKEND=${{ matrix.backend }}
         DEMO_BACKEND_DELEGATION=${{ matrix.demo_backend_delegation }}
 
         PYTHON_EXECUTABLE=python bash .ci/scripts/setup-linux.sh "${BUILD_TOOL}"
         # Build and test ExecuTorch
-        PYTHON_EXECUTABLE=python bash .ci/scripts/test.sh "${MODEL_NAME}" "${BUILD_TOOL}" "${XNNPACK_QUANTIZATION}" "${XNNPACK_DELEGATION}" "${DEMO_BACKEND_DELEGATION}"
+        PYTHON_EXECUTABLE=python bash .ci/scripts/test.sh "${MODEL_NAME}" "${BUILD_TOOL}" "${BACKEND}" "${DEMO_BACKEND_DELEGATION}"
 
   test-custom-ops-linux:
     name: test-custom-ops-linux
@@ -80,6 +72,7 @@ jobs:
       docker-image: executorch-ubuntu-22.04-clang12
       submodules: 'true'
       ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      timeout: 90
       script: |
         # The generic Linux job chooses to use base env, not the one setup by the image
         CONDA_ENV=$(conda env list --json | jq -r ".envs | .[-1]")
@@ -104,6 +97,7 @@ jobs:
       docker-image: executorch-ubuntu-22.04-clang12
       submodules: 'true'
       ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      timeout: 90
       script: |
         # The generic Linux job chooses to use base env, not the one setup by the image
         CONDA_ENV=$(conda env list --json | jq -r ".envs | .[-1]")
@@ -114,29 +108,28 @@ jobs:
         # Test selective build
         PYTHON_EXECUTABLE=python bash examples/selective_build/test_selective_build.sh "${BUILD_TOOL}"
 
-  test-coreml-delegate:
-    name: test-coreml-delegate
-    uses: pytorch/test-infra/.github/workflows/macos_job.yml@main
+  test-quantized-aot-lib-linux:
+    name: test-quantized-aot-lib-linux
+    uses: pytorch/test-infra/.github/workflows/linux_job.yml@main
     strategy:
       matrix:
         include:
           - build-tool: cmake
       fail-fast: false
     with:
-      runner: macos-13-xlarge
+      runner: linux.2xlarge
+      docker-image: executorch-ubuntu-22.04-clang12
       submodules: 'true'
       ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-      timeout: 60
+      timeout: 90
       script: |
-        WORKSPACE=$(pwd)
-        pushd "${WORKSPACE}/pytorch/executorch"
-        BUILD_TOOL=${{ matrix.build-tool }}
-        # Setup MacOS dependencies as there is no Docker support on MacOS atm
-        PYTHON_EXECUTABLE=python bash .ci/scripts/setup-macos.sh "${BUILD_TOOL}"
+        # The generic Linux job chooses to use base env, not the one setup by the image
+        CONDA_ENV=$(conda env list --json | jq -r ".envs | .[-1]")
+        conda activate "${CONDA_ENV}"
 
-        # Build and test coreml delegate
-        PYTHON_EXECUTABLE=python bash backends/apple/coreml/scripts/build_all.sh
-        popd
+        BUILD_TOOL=${{ matrix.build-tool }}
+        PYTHON_EXECUTABLE=python bash .ci/scripts/setup-linux.sh "${BUILD_TOOL}"
+        PYTHON_EXECUTABLE=python bash .ci/scripts/test_quantized_aot_lib.sh
 
   unittest:
     uses: ./.github/workflows/_unittest.yml

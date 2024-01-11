@@ -24,9 +24,7 @@ from torch.utils._python_dispatch import _get_current_dispatch_mode
 from torch.utils._pytree import tree_flatten
 
 
-executorch_call_delegate = HigherOrderOperator(
-    "executorch_call_delegate", _deprecated_global_ns=True
-)
+executorch_call_delegate = HigherOrderOperator("executorch_call_delegate")
 # pyre-ignore
 executorch_call_delegate.fallthrough(torch._C.DispatchKey.PythonDispatcher)
 # pyre-ignore
@@ -54,8 +52,7 @@ def trace_call_delegate(proxy_mode, func_overload, lowered_module, *args):
     with disable_proxy_modes_tracing():
         out = lowered_module.original_module(*args)
 
-    lowered_name = get_lowered_module_name(proxy_mode.tracer.root, lowered_module)
-    proxy_mode.tracer.root.register_module(lowered_name, lowered_module)
+    get_lowered_module_name(proxy_mode.tracer.root, lowered_module)
 
     node_args = (lowered_module, *args)
     proxy_args = pytree.tree_map(_unwrap_proxy, node_args)

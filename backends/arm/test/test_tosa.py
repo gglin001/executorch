@@ -11,7 +11,7 @@ import copy
 import unittest
 
 import executorch.exir as exir
-from executorch.backends.arm.arm_backend import ArmPartitioner
+from executorch.backends.arm.arm_partitioner import ArmPartitioner
 from executorch.backends.arm.test.test_models import TestList, TosaProfile
 from executorch.exir import EdgeCompileConfig
 
@@ -105,6 +105,6 @@ def export_model(model, inputs, compile_spec):
     model_edge = to_edge(model_capture, compile_config=_EDGE_COMPILE_CONFIG)
     ArmPartitioner.compile_spec = compile_spec
 
-    model_edge = model_edge.to_backend(ArmPartitioner)
+    model_edge = model_edge.to_backend(ArmPartitioner())
     exec_prog = model_edge.to_executorch()
     return model_edge, exec_prog
