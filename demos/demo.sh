@@ -1,9 +1,9 @@
 # buck2 build --config build.type=debug examples/portable/executor_runner:executor_runner
 
-python3 -m examples.portable.scripts.export_and_delegate
+python3 -m examples.portable.scripts.export_and_delegate --option whole
 buck2 run --config build.type=debug examples/portable/executor_runner:executor_runner -- --model_path whole.pte
 
-python3 -m examples.portable.scripts.export
+python3 -m examples.portable.scripts.export -m add
 buck2 run --config build.type=debug examples/portable/executor_runner:executor_runner -- --model_path add.pte
 
 # # not work due to torch.dynamo
