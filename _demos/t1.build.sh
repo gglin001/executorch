@@ -25,9 +25,9 @@ chmod +x _demos/bin/buck2
 # install flatc
 bash build/install_flatc.sh
 
-export EXECUTORCH_BUILD_CUSTOM_OPS_AOT=0
-export BUCK2="$PWD/_demos/bin/buck2"
-export PATH="$PWD/third-party/flatbuffers/cmake-out:$PWD/_demos/bin:${PATH}"
+# export EXECUTORCH_BUILD_CUSTOM_OPS_AOT=0
+# export BUCK2="$PWD/_demos/bin/buck2"
+# export PATH="$PWD/third-party/flatbuffers/cmake-out:$PWD/_demos/bin:${PATH}"
 bash install_requirements.sh
 # pip install -e .
 
