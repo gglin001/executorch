@@ -37,3 +37,8 @@ python3 -m examples.portable.scripts.export --model_name="add"
 buck2 run --config build.type=debug //examples/portable/executor_runner:executor_runner -- --model_path add.pte
 
 ###############################################################################
+
+# for code reading and cmake building
+# build with cmake in vscode and work with clangd
+
+###############################################################################

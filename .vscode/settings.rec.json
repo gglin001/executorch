@@ -9,7 +9,7 @@
     },
     "cmake.configureSettings": {
         "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install",
-        "BUCK2": "buck2",
+        "BUCK2": "${workspaceFolder}/_demos/bin/buck2"
         // "ET_MIN_LOG_LEVEL": "Debug",
     },
     "cmake.buildDirectory": "${workspaceFolder}/cmake-out",
@@ -27,8 +27,4 @@
     "python.analysis.exclude": [
         "${workspaceFolder}",
     ],
-    // "python.analysis.autoImportCompletions": true,
-    // "python.analysis.typeCheckingMode": "basic"
-    // "C_Cpp.intelliSenseEngine": "default",
-    // "C_Cpp.intelliSenseCachePath": "${workspaceFolder}/build/.vsc_cpp_cache",
 }
