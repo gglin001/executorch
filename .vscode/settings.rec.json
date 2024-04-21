@@ -1,10 +1,10 @@
 {
     "terminal.integrated.env.linux": {
-        "EXT_PATH": "${workspaceFolder}/build/install/bin:${workspaceFolder}/third-party/flatbuffers/cmake-out:${workspaceFolder}/_demos/bin",
+        "EXT_PATH": "${workspaceFolder}/cmake-out:${workspaceFolder}/third-party/flatbuffers/cmake-out:${workspaceFolder}/_demos/bin",
         "EXT_PYTHONPATH": "${workspaceFolder}",
     },
     "terminal.integrated.env.osx": {
-        "EXT_PATH": "${workspaceFolder}/build/install/bin:${workspaceFolder}/third-party/flatbuffers/cmake-out:${workspaceFolder}/_demos/bin",
+        "EXT_PATH": "${workspaceFolder}/cmake-out:${workspaceFolder}/third-party/flatbuffers/cmake-out:${workspaceFolder}/_demos/bin",
         "EXT_PYTHONPATH": "${workspaceFolder}",
     },
     "cmake.configureSettings": {
