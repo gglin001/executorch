@@ -14,6 +14,7 @@ import torch
 from executorch.backends.xnnpack.partition.configs import (
     _SUPPORTED_MODULES_WITH_DYNAMIC_SHAPE,
     _SUPPORTED_OPS_WITH_DYNAMIC_SHAPE,
+    SUPPORTED_DYN_QUANT_LINEAR_MODULES,
     SUPPORTED_DYN_QUANT_MODULES,
     SUPPORTED_MODULES,
     SUPPORTED_OPS,
@@ -21,17 +22,23 @@ from executorch.backends.xnnpack.partition.configs import (
     SUPPORTED_QUANT_OPS,
     UNSUPPORTED_QUANT_MODULES,
 )
-from executorch.backends.xnnpack.partition.graphs.bilinear_2d import bilinear2d_graphs
+from executorch.backends.xnnpack.partition.graphs import bilinear_2d, sdpa
 from executorch.backends.xnnpack.passes.fuse_batch_norm_with_conv import (
     FuseBatchNormWithConvPass,
 )
-from executorch.backends.xnnpack.utils.utils import get_input_node, is_param_node
+from executorch.backends.xnnpack.utils.quant_utils import is_dequant
+from executorch.backends.xnnpack.utils.utils import (
+    get_input_node,
+    get_source_fn,
+    is_param_node,
+)
 from executorch.backends.xnnpack.xnnpack_preprocess import XnnpackBackend
 
 from executorch.exir.backend.canonical_partitioners.pattern_op_partitioner import (
     generate_partitions_from_list_of_nodes,
     generate_pattern_op_partitions,
 )
+from executorch.exir.backend.compile_spec_schema import CompileSpec
 
 from executorch.exir.backend.partitioner import (
     DelegationSpec,
@@ -98,7 +105,65 @@ class XnnpackOperatorSupport(OperatorSupportBase):
         self.supported_ops = supported_ops
         self.constraints = constraints_dict
         self.ep = ep
+        self.nodes_with_packed_weights = {
+            exir_ops.edge.aten.convolution.default,
+            exir_ops.edge.aten.addmm.default,
+            exir_ops.edge.aten.mm.default,
+            exir_ops.edge.aten.bmm.default,
+        }
         assert len(self.constraints)
+
+    def _check_inputs_are_valid_dtypes(self, node, valid_dtypes):
+        # Check inputs are valid dtypes
+
+        # Gather all args which are nodes
+        args_to_check = []
+        for arg in node.args:
+            if isinstance(arg, list) or isinstance(arg, tuple):
+                for item in arg:
+                    if isinstance(item, torch.fx.Node):
+                        args_to_check.append(item)
+
+            if isinstance(arg, torch.fx.Node):
+                args_to_check.append(arg)
+
+        for arg in args_to_check:
+            arg_val = arg.meta.get("val", None)
+
+            if arg_val is None or isinstance(arg_val, tuple):
+                continue
+
+            # Being conservative for now, UX >> Perf
+            # TODO: We need a pass to scrub these out.
+            if not isinstance(arg_val, torch.Tensor):
+                return False
+
+            # XNNPACK does not support empty tensors
+            if arg_val.numel() == 0:
+                return False
+
+            if arg_val.dtype not in valid_dtypes:
+                return False
+
+        return True
+
+    def _check_outputs_are_valid_dtypes(self, node, valid_dtypes):
+        # Check outputs are valid dtype
+        node_val = node.meta.get("val", None)
+        if node_val is None:
+            return True
+
+        if not isinstance(node_val, tuple):
+            node_val = (node_val,)
+
+        for val in node_val:
+            if not isinstance(val, torch.Tensor):
+                return False
+
+            if val.dtype not in valid_dtypes:
+                return False
+
+        return True
 
     def check_node_has_valid_dtype(self, node):
         if node.target in {exir_ops.edge.aten.max_pool2d_with_indices.default}:
@@ -106,6 +171,7 @@ class XnnpackOperatorSupport(OperatorSupportBase):
 
         valid_dtypes = {
             torch.float32,
+            torch.float16,
             torch.int8,
             torch.qint8,
         }
@@ -116,29 +182,9 @@ class XnnpackOperatorSupport(OperatorSupportBase):
         ):
             return False
 
-        # Check inputs are valid dtypes
-        for arg in node.args:
-            if not isinstance(arg, torch.fx.Node):
-                continue
-            arg_val = arg.meta.get("val", None)
-
-            if arg_val is None or isinstance(arg_val, tuple):
-                continue
-
-            if arg_val.dtype not in valid_dtypes:
-                return False
-
-        # Check outputs are valid dtype
-        node_val = node.meta.get("val", None)
-        if node_val is not None:
-            if not isinstance(node_val, tuple):
-                node_val = (node_val,)
-
-            for val in node_val:
-                if val.dtype not in valid_dtypes:
-                    return False
-
-        return True
+        return self._check_inputs_are_valid_dtypes(
+            node, valid_dtypes
+        ) and self._check_outputs_are_valid_dtypes(node, valid_dtypes)
 
     def check_common_constraints(self, node) -> bool:
         has_valid_dtypes = self.check_node_has_valid_dtype(node)
@@ -157,9 +203,18 @@ class XnnpackOperatorSupport(OperatorSupportBase):
     def is_node_supported(self, submodules, node: torch.fx.Node) -> bool:
         # Parameters are supported if any of their users are supported
         if is_param_node(self.ep, node):
-            return any(
-                self.is_node_supported(submodules, user) for user in node.users.keys()
-            )
+            for user in node.users.keys():
+                user_of_param = user
+                if is_dequant(user):
+                    user_of_param = list(user.users.keys())[0]
+                if (
+                    self.is_node_supported(submodules, user_of_param)
+                    and user_of_param.target in self.nodes_with_packed_weights
+                ):
+                    return True
+
+            return False
+
         # TODO - other ops?
         if node.op != "call_function":
             return False
@@ -172,6 +227,7 @@ class XnnpackOperatorSupport(OperatorSupportBase):
             node
         )
 
+    @staticmethod
     def _constraint(target):  # noqa
         """
         Decorator to register a constraint fn for a node
@@ -277,6 +333,76 @@ class XnnpackOperatorSupport(OperatorSupportBase):
         getitem0 = list(cqp.users.keys())[0]
         q = list(getitem0.users.keys())[0]
         return XnnpackOperatorSupport.check_constraint(q, ep)
+
+    @_constraint(exir_ops.edge.quantized_decomposed.dequantize_per_token.default)
+    def dequant_per_token(dq: torch.fx.Node, ep: ExportedProgram) -> bool:  # noqa
+        node = list(dq.users.keys())[0]
+        assert isinstance(node, torch.fx.Node)
+        return (
+            node.target
+            in [
+                exir_ops.edge.aten.mm.default,
+                exir_ops.edge.aten.addmm.default,
+            ]
+            or get_source_fn(node) in SUPPORTED_DYN_QUANT_LINEAR_MODULES
+        )
+
+    @_constraint(exir_ops.edge.quantized_decomposed.quantize_per_token.default)
+    def quant_per_token(q: torch.fx.Node, ep: ExportedProgram) -> bool:  # noqa
+        dq = list(q.users.keys())[0]
+        return (
+            dq.target == exir_ops.edge.quantized_decomposed.dequantize_per_token.default
+            and XnnpackOperatorSupport.dequant_per_token(dq, ep)
+        )
+
+    @_constraint(
+        exir_ops.edge.quantized_decomposed.choose_qparams_per_token_asymmetric.default
+    )
+    def choose_qparams_per_token_asymmetric(
+        cqp: torch.fx.Node, ep: ExportedProgram  # noqa
+    ) -> bool:
+        """
+        Given, cqp -> getitem -> q -> dq -> {mm, addmm}
+        Just check q, because it will check dq
+        """
+        getitem0 = list(cqp.users.keys())[0]
+        q = list(getitem0.users.keys())[0]
+        return (
+            q.target == exir_ops.edge.quantized_decomposed.quantize_per_token.default
+            and XnnpackOperatorSupport.check_constraint(q, ep)
+        )
+
+    @_constraint(
+        exir_ops.edge.quantized_decomposed.dequantize_per_channel_group.default
+    )
+    def dequant_per_channel_group_default(
+        dq: torch.fx.Node, ep: ExportedProgram  # noqa
+    ) -> bool:
+        # Currently only supported by dqlinear weights
+        permute_node = list(dq.users.keys())[0]
+        assert isinstance(permute_node, torch.fx.Node)
+        # We must have a transpose on [add]mm weights
+        if permute_node.target != exir_ops.edge.aten.permute_copy.default:
+            return False
+        mm_node = list(permute_node.users.keys())[0]
+        assert isinstance(mm_node, torch.fx.Node)
+        return mm_node.target in [
+            exir_ops.edge.aten.mm.default,
+            exir_ops.edge.aten.addmm.default,
+        ]
+
+    @_constraint(exir_ops.edge.quantized_decomposed.quantize_per_channel_group.default)
+    def quant_per_channel_group_default(
+        q: torch.fx.Node, ep: ExportedProgram  # noqa
+    ) -> bool:
+        # we shouldn't have this with folded quant weights but doesn't hurt to lower it
+        dq = list(q.users.keys())[0]
+        assert isinstance(dq, torch.fx.Node)
+        return (
+            dq.target
+            == exir_ops.edge.quantized_decomposed.dequantize_per_channel_group.default
+            and XnnpackOperatorSupport.dequant_per_channel_default(dq, ep)
+        )
 
     @_constraint(exir_ops.edge.aten.pow.Tensor_Scalar)
     def pow_tensor_scalar(node: torch.fx.Node, ep: ExportedProgram) -> bool:  # noqa
@@ -527,17 +653,22 @@ class XnnpackQuantizedPartitioner(XnnpackFloatingPointPartitioner):
     _Q_OPS = [
         exir_ops.edge.quantized_decomposed.quantize_per_tensor.default,
         exir_ops.edge.quantized_decomposed.quantize_per_channel.default,
+        exir_ops.edge.quantized_decomposed.quantize_per_channel_group.default,
         exir_ops.edge.quantized_decomposed.quantize_per_tensor.tensor,
+        exir_ops.edge.quantized_decomposed.quantize_per_token.default,
     ]
 
     _DQ_OPS = [
         exir_ops.edge.quantized_decomposed.dequantize_per_tensor.default,
         exir_ops.edge.quantized_decomposed.dequantize_per_channel.default,
+        exir_ops.edge.quantized_decomposed.dequantize_per_channel_group.default,
         exir_ops.edge.quantized_decomposed.dequantize_per_tensor.tensor,
+        exir_ops.edge.quantized_decomposed.dequantize_per_token.default,
     ]
 
     _QPARAM_OPS = [
         exir_ops.edge.quantized_decomposed.choose_qparams.tensor,
+        exir_ops.edge.quantized_decomposed.choose_qparams_per_token_asymmetric.default,
     ]
 
     _QUANT_OPS = _Q_OPS + _DQ_OPS + _QPARAM_OPS
@@ -675,13 +806,17 @@ class XnnpackPartitioner(Partitioner):
     _Q_OPS = [
         exir_ops.edge.quantized_decomposed.quantize_per_tensor.default,
         exir_ops.edge.quantized_decomposed.quantize_per_channel.default,
+        exir_ops.edge.quantized_decomposed.quantize_per_channel_group.default,
         exir_ops.edge.quantized_decomposed.quantize_per_tensor.tensor,
+        exir_ops.edge.quantized_decomposed.quantize_per_token.default,
     ]
 
     _DQ_OPS = [
         exir_ops.edge.quantized_decomposed.dequantize_per_tensor.default,
         exir_ops.edge.quantized_decomposed.dequantize_per_channel.default,
+        exir_ops.edge.quantized_decomposed.quantize_per_channel_group.default,
         exir_ops.edge.quantized_decomposed.dequantize_per_tensor.tensor,
+        exir_ops.edge.quantized_decomposed.dequantize_per_token.default,
     ]
 
     _QPARAM_OPS = [
@@ -699,6 +834,7 @@ class XnnpackPartitioner(Partitioner):
         supported_quant_ops: Optional[List[Callable]] = SUPPORTED_QUANT_OPS,
         quant: Optional[bool] = None,
         _only_ops_with_dynamic_shape_support: Optional[bool] = False,
+        _lower_recomposed_sdpa: Optional[bool] = True,
     ):
         super().__init__()
         self.supported_modules = set(supported_modules)
@@ -712,6 +848,9 @@ class XnnpackPartitioner(Partitioner):
 
         if _only_ops_with_dynamic_shape_support is True:
             self._update_op_lists_for_dynamic_shapes()
+
+        # TODO(T174256335) - remove this once we have a better way to handle >2d Mask
+        self._lower_recomposed_sdpa: bool = _lower_recomposed_sdpa or True
 
         self.delegation_spec = DelegationSpec(XnnpackBackend.__name__, [])
         self.partition_tags: Dict[str, DelegationSpec] = {}
@@ -955,7 +1094,13 @@ class XnnpackPartitioner(Partitioner):
         self, ep, quant: Optional[bool]
     ) -> List[List[torch.fx.Node]]:
         graph_module = ep.graph_module
-        graph_patterns = [gm_pattern.graph for gm_pattern in bilinear2d_graphs.keys()]
+        graphs = bilinear_2d.get_graphs()
+
+        # Temporary for lowering SDPA
+        if self._lower_recomposed_sdpa:
+            graphs += sdpa.get_graphs()
+
+        graph_patterns = [gm_pattern.graph for gm_pattern in graphs]
         partitions = generate_pattern_op_partitions(
             graph_module, graph_patterns, ignore_literals=True
         )
@@ -1047,6 +1192,9 @@ class XnnpackDynamicallyQuantizedPartitioner(XnnpackQuantizedPartitioner):
             for match in self.get_module_partitions(exported_program)
         ]
         partition_tags: Dict[str, DelegationSpec] = {}
+        self.delegation_spec = DelegationSpec(
+            XnnpackBackend.__name__, [CompileSpec("dqlinear_partitioner", bytes())]
+        )
 
         if self.check_partitions(partitions):
             partition_tags = self.tag_nodes(partitions)

@@ -4,13 +4,17 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import Dict
+from functools import lru_cache
+from typing import Dict, List
 
 import executorch.exir as exir
 import torch
 
+from executorch.backends.xnnpack.utils.configs import get_xnnpack_edge_compile_config
 
-def get_bilinear_2d_graphs():
+
+@lru_cache(maxsize=None)
+def _get_bilinear_2d_graphs():
     class bilinear2d(torch.nn.Module):
         def __init__(self, align_corners):
             super().__init__()
@@ -35,9 +39,16 @@ def get_bilinear_2d_graphs():
         for config in capture_configs:
             edge = exir.capture(
                 bilinear2d(align_corners), sample_inputs, config
-            ).to_edge()
+            ).to_edge(
+                config=get_xnnpack_edge_compile_config(),
+            )
             _bilinear2d_graphs[edge.exported_program.graph_module] = align_corners
     return _bilinear2d_graphs
 
 
-bilinear2d_graphs: Dict[torch.fx.GraphModule, bool] = get_bilinear_2d_graphs()
+def get_graphs() -> List[torch.fx.GraphModule]:
+    return list(_get_bilinear_2d_graphs().keys())
+
+
+def get_graphs_dict() -> Dict[torch.fx.GraphModule, bool]:
+    return _get_bilinear_2d_graphs()

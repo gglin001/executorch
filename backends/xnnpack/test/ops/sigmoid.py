@@ -20,8 +20,7 @@ class TestSigmoid(unittest.TestCase):
             z = self.sigmoid(x)
             return z
 
-    def test_fp32_sigmoid(self):
-        inputs = (torch.ones(4),)
+    def _test_sigmoid(self, inputs):
         (
             Tester(self.Sigmoid(), inputs)
             .export()
@@ -33,6 +32,13 @@ class TestSigmoid(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_sigmoid_default"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
+
+    def test_fp16_sigmoid(self):
+        inputs = (torch.ones(4).to(torch.float16),)
+        self._test_sigmoid(inputs)
+
+    def test_fp32_sigmoid(self):
+        inputs = (torch.ones(4),)
+        self._test_sigmoid(inputs)

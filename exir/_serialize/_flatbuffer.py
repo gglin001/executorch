@@ -9,11 +9,17 @@
 import importlib.resources
 import os
 import re
+import shutil
 import subprocess
+
 import tempfile
 
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence
+
+# If this environment variable is set to true, save the flatc input files when
+# serialization fails.
+_SAVE_FLATC_ENV: str = "ET_EXIR_SAVE_FLATC_INPUTS_ON_FAILURE"
 
 
 def _is_valid_alignment(alignment: int) -> bool:
@@ -21,6 +27,14 @@ def _is_valid_alignment(alignment: int) -> bool:
     if alignment is None:
         return True
     return alignment > 0 and (alignment & (alignment - 1)) == 0
+
+
+# TODO(T182299196): Replace this hack with a proper flatc binary.
+def _replace_infinity_in_json_file(content: str) -> str:
+    content = re.sub(
+        r'"double_val"\s*:\s*(-)?Infinity', r'"double_val": "\g<1>inf"', content
+    )
+    return content
 
 
 def _patch_schema_alignment(
@@ -275,10 +289,39 @@ def _program_json_to_flatbuffer(
         json_path = os.path.join(temp_dir, file_stem + ".json")
         output_path = os.path.join(temp_dir, file_stem + ".pte")
 
-        with open(json_path, "wb") as json_file:
-            json_file.write(program_json.encode("ascii"))
+        # TODO(T182299196): Replace this hack with a proper flatc binary.
+        replaced_program_json = _replace_infinity_in_json_file(program_json)
 
-        _flatc_compile(temp_dir, schema_info.root_path, json_path)
+        with open(json_path, "wb") as json_file:
+            json_file.write(replaced_program_json.encode("ascii"))
+
+        try:
+            _flatc_compile(temp_dir, schema_info.root_path, json_path)
+        except Exception as err:
+            # It's helpful to save the breaking files for debugging. Optionally
+            # move them out of the auto-deleting temporary directory. Don't do
+            # this by default because some input files can be many GB in size,
+            # and these copies won't be auto-deleted.
+            should_save = os.getenv(_SAVE_FLATC_ENV, "").strip() not in {"", "0"}
+            extra_message = ""
+            if should_save:
+                try:
+                    saved_dir = tempfile.mkdtemp(prefix="exir-saved-flatc-")
+                    for f in os.listdir(temp_dir):
+                        shutil.move(src=os.path.join(temp_dir, f), dst=saved_dir)
+                    extra_message += f" Moved input files to '{saved_dir}'."
+                except Exception as err2:
+                    extra_message += (
+                        f" (Failed to save input files for debugging: {err2})"
+                    )
+            else:
+                extra_message += (
+                    f" Set {_SAVE_FLATC_ENV}=1 to save input files on failure."
+                )
+
+            raise RuntimeError(
+                f"Failed to compile {json_path} to {output_path}." + extra_message
+            ) from err
         with open(output_path, "rb") as output_file:
             return _FlatbufferResult(
                 data=output_file.read(), max_alignment=schema_info.max_alignment

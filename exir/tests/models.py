@@ -7,14 +7,16 @@
 # pyre-strict
 
 import itertools
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 import executorch.exir as exir
 
 import torch  # noqa: F401
 import torch.nn as nn
+from executorch.exir import to_edge
 from executorch.exir.lowered_backend_module import LoweredBackendModule
 from torch import Tensor
+from torch.export import export
 
 # TODO: add one more test for data dependent op plus repeat
 
@@ -31,6 +33,11 @@ class Repeat(nn.Module):
 
     def get_random_inputs(self) -> Tuple[torch.Tensor, torch.Tensor]:
         return (torch.rand(4), torch.rand(5))
+
+    def get_dynamic_shape(self) -> Any:  # pyre-ignore[3]
+        dim = torch.export.Dim("dim", max=10)
+        dim2 = torch.export.Dim("dim2", max=10)
+        return ({0: dim}, {0: dim2})
 
 
 class ModelWithUnusedArg(nn.Module):
@@ -148,13 +155,14 @@ class CompositeDelegateModule(torch.nn.Module):
                 return (torch.randn(1, 3), torch.randn(1, 3))
 
         delegated_m = DelegateAdd()
-        edge_ir_m = exir.capture(
-            delegated_m,
-            delegated_m.get_random_inputs(),
-            exir.CaptureConfig(),
-        ).to_edge()
+        edge_ir_m = to_edge(
+            export(
+                delegated_m,
+                delegated_m.get_random_inputs(),
+            )
+        )
         lowered_module = LoweredBackendModule(
-            edge_program=edge_ir_m,
+            edge_program=edge_ir_m.exported_program(),
             backend_id="backend_demo",
             processed_bytes=bytes("basic_module_add", encoding="utf8"),
             compile_specs=[],
@@ -193,6 +201,7 @@ class TensorSplit(nn.Module):
         super().__init__()
 
     def forward(self, input: Tensor, sections: int, dim: int = 0) -> List[Tensor]:
+        # pyre-fixme[7]: Expected `List[Tensor]` but got `Tuple[Tensor, ...]`.
         return torch.tensor_split(input, sections, dim)
 
 

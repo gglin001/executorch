@@ -15,6 +15,9 @@ set -e
 
 OUTPUT="${1:-executorch}"
 EXIT_STATUS=0
+BUCK2_RELEASE_DATE="2024-02-15"
+BUCK2_ARCHIVE="buck2-aarch64-apple-darwin.zst"
+BUCK2=".venv/bin/buck2"
 APP_PATH="examples/demo-apps/apple_ios/ExecuTorchDemo/ExecuTorchDemo"
 MODEL_NAME="mv3"
 SIMULATOR_NAME="executorch"
@@ -52,7 +55,6 @@ cd "$OUTPUT"
 
 say "Updating the Submodules"
 
-git submodule sync
 git submodule update --init
 
 say "Activating a Virtual Environment"
@@ -62,14 +64,15 @@ source .venv/bin/activate
 
 say "Installing Requirements"
 
-pip install cmake
-./install_requirements.sh
+pip install --upgrade cmake pip setuptools wheel zstd
+
+curl -LO "https://github.com/facebook/buck2/releases/download/$BUCK2_RELEASE_DATE/$BUCK2_ARCHIVE"
+zstd -cdq "$BUCK2_ARCHIVE" > "$BUCK2" && chmod +x "$BUCK2"
+rm "$BUCK2_ARCHIVE"
+
+./install_requirements.sh --pybind coreml mps xnnpack
 export PATH="$(realpath third-party/flatbuffers/cmake-out):$PATH"
 ./build/install_flatc.sh
-
-curl -LO "https://github.com/facebook/buck2/releases/download/2023-07-18/buck2-aarch64-apple-darwin.zst"
-pip install zstd
-zstd -cdq buck2-aarch64-apple-darwin.zst > .venv/bin/buck2 && chmod +x .venv/bin/buck2
 
 say "Installing CoreML Backend Requirements"
 
@@ -81,10 +84,10 @@ say "Installing MPS Backend Requirements"
 
 say "Exporting Models"
 
-python3 -m examples.portable.scripts.export --model_name="$$MODEL_NAME"
-python3 -m examples.apple.coreml.scripts.export_and_delegate --model_name="$$MODEL_NAME"
-python3 -m examples.apple.mps.scripts.mps_example --model_name="$$MODEL_NAME"
-python3 -m examples.xnnpack.aot_compiler --model_name="$$MODEL_NAME" --delegate
+python3 -m examples.portable.scripts.export --model_name="$MODEL_NAME"
+python3 -m examples.apple.coreml.scripts.export --model_name="$MODEL_NAME"
+python3 -m examples.apple.mps.scripts.mps_example --model_name="$MODEL_NAME"
+python3 -m examples.xnnpack.aot_compiler --model_name="$MODEL_NAME" --delegate
 
 mkdir -p "$APP_PATH/Resources/Models/MobileNet/"
 mv $MODEL_NAME*.pte "$APP_PATH/Resources/Models/MobileNet/"
@@ -93,11 +96,6 @@ say "Downloading Labels"
 
 curl https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt \
   -o "$APP_PATH/Resources/Models/MobileNet/imagenet_classes.txt"
-
-say "Building Frameworks"
-
-./build/build_apple_frameworks.sh --buck2="$(realpath .venv/bin/buck2)" --Release --coreml --mps --xnnpack
-mv cmake-out "$APP_PATH/Frameworks"
 
 say "Creating Simulator"
 

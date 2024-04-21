@@ -17,10 +17,6 @@ if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
 
-if(NOT PYTHON_EXECUTABLE)
-  set(PYTHON_EXECUTABLE python3)
-endif()
-
 if(NOT FLATCC_EXECUTABLE)
   set(FLATCC_EXECUTABLE flatcc)
 endif()
@@ -28,6 +24,12 @@ endif()
 # Source root directory for executorch.
 if(NOT EXECUTORCH_ROOT)
   set(EXECUTORCH_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
+endif()
+
+include(${EXECUTORCH_ROOT}/build/Utils.cmake)
+
+if(NOT PYTHON_EXECUTABLE)
+  resolve_python_executable()
 endif()
 
 if(NOT FLATC_EXECUTABLE)
@@ -50,8 +52,15 @@ foreach(schema_file ${_bundled_input_schema_names})
        "${CMAKE_CURRENT_SOURCE_DIR}/bundled_program/schema/${schema_file}")
 endforeach()
 
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third-party/flatcc
-                 ${CMAKE_BINARY_DIR}/third-party/flatcc)
+set(FLATCC_TEST OFF CACHE BOOL "")
+set(FLATCC_REFLECTION OFF CACHE BOOL "")
+set(_flatcc_source_dir ${CMAKE_CURRENT_SOURCE_DIR}/../third-party/flatcc)
+add_subdirectory(${_flatcc_source_dir} ${CMAKE_BINARY_DIR}/third-party/flatcc)
+
+# Fix for "relocation R_X86_64_32 against `.rodata' can not be used when making
+# a shared object; recompile with -fPIC" when building on some x86 linux
+# systems.
+set_property(TARGET flatccrt PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 # Assume we are cross-compiling and the CMAKE_TOOLCHAIN_FILE is set
 include(ExternalProject)
@@ -65,8 +74,11 @@ set(_bundled_schema__include_dir "${CMAKE_BINARY_DIR}/sdk/bundled_program")
 ExternalProject_Add(
   flatcc_project
   PREFIX ${CMAKE_BINARY_DIR}/_host_build
-  SOURCE_DIR ${CMAKE_SOURCE_DIR}/third-party/flatcc
+  SOURCE_DIR ${_flatcc_source_dir}
   BINARY_DIR ${CMAKE_BINARY_DIR}/_host_build
+  CMAKE_CACHE_ARGS -DFLATCC_TEST:BOOL=OFF -DFLATCC_REFLECTION:BOOL=OFF
+      # See above comment about POSITION_INDEPENDENT_CODE.
+      -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON
   INSTALL_COMMAND "" # Prevent the install step, modify as needed
 )
 
@@ -105,9 +117,28 @@ file(MAKE_DIRECTORY
 add_custom_command(
   OUTPUT ${_etdump_schema__outputs}
   COMMAND
-    ${CMAKE_SOURCE_DIR}/third-party/flatcc/bin/flatcc -cwr -o
+    # Note that the flatcc project actually writes its outputs into the source
+    # tree instead of under the binary directory, and there's no way to change
+    # that behavior.
+    ${_flatcc_source_dir}/bin/flatcc -cwr -o
     ${_program_schema__include_dir}/executorch/sdk/etdump
     ${_etdump_schema__srcs}
+  # TODO(dbort): flatcc installs its files directly in its source directory
+  # instead of under CMAKE_BINARY_DIR, and it has no options to avoid
+  # doing this. We build flatcc twice in the executorch build: once to get
+  # the `flatcc` host commandline tool, and once to get the (potentially
+  # cross-compiled) target runtime library. The host build will put its outputs
+  # in the source tree, making the cross-compiling target build think that
+  # the outputs have already been built. It will then try to link against the
+  # host-architecture libraries, failing when cross-compiling. To work around
+  # this, delete the host outputs after running this command (which only runs
+  # when setting up the cmake files, not when actually building). This leaves
+  # room for the target build to put its own files in the source tree. We should
+  # try to remove this hack, ideally by submitting an upstream PR that adds an
+  # option to change the installation location.
+  COMMAND
+    rm -f ${_flatcc_source_dir}/bin/*
+    ${_flatcc_source_dir}/lib/*
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/sdk
   DEPENDS flatcc_project
   COMMENT "Generating etdump headers"
@@ -118,7 +149,7 @@ add_library(etdump ${CMAKE_CURRENT_SOURCE_DIR}/etdump/etdump_flatcc.cpp
 
 target_link_libraries(
   etdump
-  PUBLIC etdump_schema
+  PUBLIC etdump_schema flatccrt
   PRIVATE executorch)
 
 add_custom_command(
@@ -144,11 +175,11 @@ target_include_directories(
 
 target_include_directories(
   etdump PUBLIC ${_program_schema__include_dir}
-                ${CMAKE_SOURCE_DIR}/third-party/flatcc/include)
+                ${_flatcc_source_dir}/include)
 
 # Install libraries
 install(
-  TARGETS bundled_program etdump flatcc
+  TARGETS bundled_program etdump flatccrt
   DESTINATION ${CMAKE_BINARY_DIR}/lib
   INCLUDES
   DESTINATION ${_common_include_directories})

@@ -21,16 +21,15 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.ProgressBar;
-import com.example.executorchdemo.executor.EValue;
-import com.example.executorchdemo.executor.Module;
-import com.example.executorchdemo.executor.Tensor;
-import com.example.executorchdemo.executor.TensorImageUtils;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Objects;
+import org.pytorch.executorch.EValue;
+import org.pytorch.executorch.Module;
+import org.pytorch.executorch.Tensor;
 
 public class MainActivity extends Activity implements Runnable {
   private ImageView mImageView;
@@ -189,7 +188,7 @@ public class MainActivity extends Activity implements Runnable {
     final float[] inputs = inputTensor.getDataAsFloatArray();
 
     final long startTime = SystemClock.elapsedRealtime();
-    Tensor outputTensor = mModule.forward(EValue.from(inputTensor)).toTensor();
+    Tensor outputTensor = mModule.forward(EValue.from(inputTensor))[0].toTensor();
     final long inferenceTime = SystemClock.elapsedRealtime() - startTime;
     Log.d("ImageSegmentation", "inference time (ms): " + inferenceTime);
 

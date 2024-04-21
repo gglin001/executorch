@@ -49,11 +49,15 @@ def dbg_tosa_dump(tosa_graph, path):
     fb = tosa_graph.serialize()
     js = tosa_graph.writeJson(filename)
 
-    with open(path + filename, "wb") as f:
+    filepath_tosa_fb = os.path.join(path, filename)
+    with open(filepath_tosa_fb, "wb") as f:
         f.write(fb)
+    assert os.path.exists(filepath_tosa_fb), "Failed to write TOSA flatbuffer"
 
-    with open(path + "desc.json", "w") as f:
+    filepath_desc_json = os.path.join(path, "desc.json")
+    with open(filepath_desc_json, "w") as f:
         f.write(js)
+    assert os.path.exists(filepath_desc_json), "Failed to write TOSA JSON"
 
 
 def dbg_fail(node, tosa_graph, path):
@@ -170,3 +174,16 @@ def is_bias_node_for_addmm(node):
         )
 
     return is_rank2_linear_bias or is_rank_greater_than_2_linear_bias
+
+
+def is_consumer_node_depthwise_conv2d(node):
+    consumer_node = list(node.users)[0]
+    if consumer_node.target == exir_ops.edge.aten.convolution.default:
+        inputs = []
+        for arg in consumer_node.args:
+            inputs.append(TosaArg(arg))
+        group = inputs[-1]
+        if group.number > 1:
+            return True
+
+    return False

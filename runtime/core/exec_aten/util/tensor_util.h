@@ -315,7 +315,7 @@
 #define ET_CHECK_DEFAULT_OR_CHANNELSLAST_DIMORDER(t__)           \
   ({                                                             \
     ET_CHECK_MSG(                                                \
-        is_default_dim_order(                                    \
+        is_contiguous_dim_order(                                 \
             t__.dim_order().data(), t__.dim_order().size()) ||   \
             is_channels_last_dim_order(                          \
                 t__.dim_order().data(), t__.dim_order().size()), \
@@ -357,9 +357,6 @@
  * If `cond` is false, log `cond` and return from the kernel with a failure
  * state set.
  *
- * TODO(ssjia): add context.fail(torch.executor::Error::error); before exit
- * TODO(ssjia): replace runtime_abort() with return retval
- *
  * @param[in] context the runtime context
  * @param[in] cond the condition to check
  * @param[in] error torch::executor::Error enum value (e.g `InvalidArgument`)
@@ -369,16 +366,14 @@
   do {                                                \
     if (!(cond)) {                                    \
       ET_LOG(Error, "Check failed (%s): ", #cond);    \
-      torch::executor::runtime_abort();               \
+      context.fail(torch::executor::Error::error);    \
+      return retval;                                  \
     }                                                 \
   } while (false)
 
 /**
  * If `cond` is false, log `message` and return from the kernel with a failure
  * state set.
- *
- * TODO(ssjia): add context.fail(torch.executor::Error::error); before exit
- * TODO(ssjia): replace runtime_abort() with return retval
  *
  * @param[in] context the runtime context
  * @param[in] cond the condition to check
@@ -389,7 +384,8 @@
   do {                                                                    \
     if (!(cond)) {                                                        \
       ET_LOG(Error, "Check failed (%s): " message, #cond, ##__VA_ARGS__); \
-      torch::executor::runtime_abort();                                   \
+      context.fail(torch::executor::Error::error);                        \
+      return retval;                                                      \
     }                                                                     \
   } while (false)
 
@@ -486,6 +482,33 @@ inline bool tensor_is_floating_type(exec_aten::Tensor t) {
   ET_LOG_MSG_AND_RETURN_IF_FALSE(
       torch::executor::isFloatingType(t.scalar_type()),
       "Expected to find a floating type, but tensor has type %s",
+      torch::executor::toString(t.scalar_type()));
+
+  return true;
+}
+
+inline bool tensor_is_real_type(exec_aten::Tensor t) {
+  ET_LOG_MSG_AND_RETURN_IF_FALSE(
+      torch::executor::isRealType(t.scalar_type()),
+      "Expected to find a real type, but tensor has type %s",
+      torch::executor::toString(t.scalar_type()));
+
+  return true;
+}
+
+inline bool tensor_is_realh_type(exec_aten::Tensor t) {
+  ET_LOG_MSG_AND_RETURN_IF_FALSE(
+      torch::executor::isRealHType(t.scalar_type()),
+      "Expected to find a real type, but tensor has type %s",
+      torch::executor::toString(t.scalar_type()));
+
+  return true;
+}
+
+inline bool tensor_is_realhb_type(exec_aten::Tensor t) {
+  ET_LOG_MSG_AND_RETURN_IF_FALSE(
+      torch::executor::isRealHBType(t.scalar_type()),
+      "Expected to find a real type, but tensor has type %s",
       torch::executor::toString(t.scalar_type()));
 
   return true;
@@ -714,16 +737,6 @@ inline bool tensors_have_same_shape_and_dtype(
   return tensors_have_same_shape(a, b, c) && tensors_have_same_dtype(a, b, c);
 }
 
-#define ET_CHECK_DEFAULT_OR_CHANNELSLAST_DIMORDER(t__)           \
-  ({                                                             \
-    ET_CHECK_MSG(                                                \
-        is_default_dim_order(                                    \
-            t__.dim_order().data(), t__.dim_order().size()) ||   \
-            is_channels_last_dim_order(                          \
-                t__.dim_order().data(), t__.dim_order().size()), \
-        "Tensor must have default or channels last dim order");  \
-  })
-
 inline bool tensor_has_expected_size(
     exec_aten::Tensor a,
     exec_aten::ArrayRef<exec_aten::SizesType> expected_sizes) {
@@ -831,6 +844,10 @@ inline bool tensors_have_same_rank(exec_aten::Tensor a, exec_aten::Tensor b) {
       ssize_t(a.dim()),
       ssize_t(b.dim()));
   return true;
+}
+
+inline bool tensor_is_scalar(exec_aten::Tensor t) {
+  return t.dim() == 0 && t.numel() == 1;
 }
 
 /**

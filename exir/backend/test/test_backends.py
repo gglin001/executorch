@@ -99,7 +99,7 @@ class TestBackends(unittest.TestCase):
         self, delegate: LoweredBackendModule, input_len: int
     ) -> None:
         counter = 0
-        for node in delegate._original_module.graph.nodes:
+        for node in delegate.original_module.graph.nodes:
             if node.op == "placeholder":
                 counter += 1
         self.assertEqual(counter, input_len)
@@ -720,7 +720,11 @@ class TestBackends(unittest.TestCase):
         composite_m = CompositeModel(3)
         orig_res = composite_m(*inputs)
 
-        traced = exir.capture(composite_m, inputs, exir.CaptureConfig(),).to_edge(
+        traced = exir.capture(
+            composite_m,
+            inputs,
+            exir.CaptureConfig(),
+        ).to_edge(
             # torch._export.verifier.SpecViolationError: Operator torch._ops.aten.mkldnn_rnn_layer.default is not Aten Canonical.
             exir.EdgeCompileConfig(_check_ir_validity=False)
         )
@@ -1245,14 +1249,15 @@ class TestBackends(unittest.TestCase):
         gm(*inputs)
 
     def test_dict_input(self):
-        def f(x: Dict[str, torch.Tensor]):
-            y = x["a"] + x["b"]
-            return y
+        class M(torch.nn.Module):
+            def forward(self, x: Dict[str, torch.Tensor]):
+                y = x["a"] + x["b"]
+                return y
 
         inputs = ({"a": torch.randn(2, 2), "b": torch.randn(2, 2)},)
-        edge_prog = exir.capture(f, inputs, exir.CaptureConfig()).to_edge()
+        edge_prog = exir.to_edge(torch.export.export(M(), inputs))
         lowered_gm = to_backend(
-            BackendWithCompilerDemo.__name__, edge_prog.exported_program, []
+            BackendWithCompilerDemo.__name__, edge_prog.exported_program(), []
         )
 
         class ComposedM(torch.nn.Module):

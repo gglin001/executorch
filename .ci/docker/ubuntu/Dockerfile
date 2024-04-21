@@ -20,6 +20,11 @@ ARG CLANG_VERSION
 COPY ./common/install_clang.sh install_clang.sh
 RUN bash ./install_clang.sh && rm install_clang.sh
 
+# Install gcc
+ARG GCC_VERSION
+COPY ./common/install_gcc.sh install_gcc.sh
+RUN bash ./install_gcc.sh && rm install_gcc.sh
+
 # Setup buck
 ARG BUCK2_VERSION
 COPY ./common/install_buck.sh install_buck.sh
@@ -65,6 +70,12 @@ COPY ./common/utils.sh utils.sh
 COPY ./requirements-lintrunner.txt requirements-lintrunner.txt
 RUN if [ -n "${LINTRUNNER}" ]; then bash ./install_linter.sh; fi
 RUN rm install_linter.sh utils.sh requirements-lintrunner.txt
+
+ARG ANDROID_NDK_VERSION
+# Install lintrunner if needed
+COPY ./common/install_android.sh install_android.sh
+RUN if [ -n "${ANDROID_NDK_VERSION}" ]; then bash ./install_android.sh; fi
+RUN rm install_android.sh
 
 ARG ARM_SDK
 COPY --chown=ci-user:ci-user ./arm /opt/arm

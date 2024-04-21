@@ -105,6 +105,7 @@ TensorWrapper::TensorWrapper(
 
 Error TensorWrapper::FillDataBuffer(const void* data, bool copy_data) {
   if (data != nullptr) {
+    QNN_VER_PTR(tensor_)->memType = QNN_TENSORMEMTYPE_RAW;
     QNN_VER_PTR(tensor_)->clientBuf.dataSize = bytes_;
     if (copy_data) {
       owned_data_ = std::make_unique<char[]>(bytes_);
@@ -116,9 +117,21 @@ Error TensorWrapper::FillDataBuffer(const void* data, bool copy_data) {
       QNN_VER_PTR(tensor_)->clientBuf.data = const_cast<void*>(data);
     }
   } else {
-    QNN_EXECUTORCH_LOG(
-        kLogLevelWarn, "[Qnn ExecuTorch] Data pointer is nullptr");
+    QNN_EXECUTORCH_LOG_WARN("Data pointer is nullptr");
   }
+  return Error::Ok;
+}
+
+Error TensorWrapper::AllocateDataBuffer() {
+  char* static_data_buffer = new (std::nothrow) char[bytes_]; // NOLINT
+  if (static_data_buffer == nullptr) {
+    return Error::Internal;
+  }
+  owned_data_ = std::unique_ptr<char[]>(static_data_buffer);
+  QNN_VER_PTR(tensor_)->memType = QNN_TENSORMEMTYPE_RAW;
+  QNN_VER_PTR(tensor_)->clientBuf.dataSize = bytes_;
+  QNN_VER_PTR(tensor_)->clientBuf.data = owned_data_.get();
+
   return Error::Ok;
 }
 
@@ -129,6 +142,12 @@ void TensorWrapper::UpdateQnnTensorMeta(const Qnn_Tensor_t& tensor_src) {
 Error TensorWrapper::SetName(const std::string& name) {
   qnn_tensor_name_ = name;
   QNN_VER_PTR(tensor_)->name = qnn_tensor_name_.c_str();
+  return Error::Ok;
+}
+
+Error TensorWrapper::SetMemHandle(Qnn_MemHandle_t mem_handle) {
+  QNN_VER_PTR(tensor_)->memType = QNN_TENSORMEMTYPE_MEMHANDLE;
+  QNN_VER_PTR(tensor_)->memHandle = mem_handle;
   return Error::Ok;
 }
 
@@ -189,7 +208,8 @@ std::shared_ptr<TensorWrapper> CreateTensorWrapper(const Qnn_Tensor_t& tensor) {
       CreateQuantizationParamWrapper(QNN_VER_PTR(tensor)->quantizeParams),
       QNN_VER_PTR(tensor)->rank,
       QNN_VER_PTR(tensor)->dimensions,
-      QNN_VER_PTR(tensor)->clientBuf.dataSize);
+      QNN_VER_PTR(tensor)->clientBuf.dataSize,
+      QNN_VER_PTR(tensor)->clientBuf.data);
 }
 } // namespace qnn
 } // namespace executor

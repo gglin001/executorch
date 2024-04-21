@@ -8,21 +8,17 @@
 
 import argparse
 
-from typing import List, Union
+from typing import List
 
 import torch
 
-from executorch.exir import (
-    ExecutorchProgram,
-    ExecutorchProgramManager,
-    MultiMethodExecutorchProgram,
-)
+from executorch.exir import ExecutorchProgramManager
+from executorch.sdk import BundledProgram
 from executorch.sdk.bundled_program.config import (
     MethodInputType,
     MethodTestCase,
     MethodTestSuite,
 )
-from executorch.sdk.bundled_program.core import create_bundled_program
 from executorch.sdk.bundled_program.serialize import (
     serialize_from_bundled_program_to_flatbuffer,
 )
@@ -33,11 +29,7 @@ from ...portable.utils import export_to_exec_prog
 
 
 def save_bundled_program(
-    executorch_program: Union[
-        ExecutorchProgram,
-        MultiMethodExecutorchProgram,
-        ExecutorchProgramManager,
-    ],
+    executorch_program: ExecutorchProgramManager,
     method_test_suites: List[MethodTestSuite],
     output_path: str,
 ):
@@ -50,7 +42,7 @@ def save_bundled_program(
         output_path: Path to save the bundled program.
     """
 
-    bundled_program = create_bundled_program(executorch_program, method_test_suites)
+    bundled_program = BundledProgram(executorch_program, method_test_suites)
     bundled_program_buffer = serialize_from_bundled_program_to_flatbuffer(
         bundled_program
     )

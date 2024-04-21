@@ -16,7 +16,7 @@ from .qnn_constants import OpConcat, QNN_OP_PACKAGE_NAME_QTI_AISW
 
 @register_node_visitor
 class Cat(NodeVisitor):
-    target = "aten.cat.default"
+    target = ["aten.cat.default"]
 
     def __init__(self, *args) -> None:
         super().__init__(*args)
@@ -37,6 +37,7 @@ class Cat(NodeVisitor):
                     input_tensor,
                     PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
                     nodes_to_wrappers,
+                    is_input_tensor=True,
                 )
             )
 
@@ -52,9 +53,17 @@ class Cat(NodeVisitor):
             output_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=False,
         )
 
-        axis = cast(int, node.args[1])
+        # node args[1] might not exist
+        axis = 0
+        if len(node.args) == 2:
+            axis = cast(int, node.args[1])
+
+        if axis < 0:
+            axis += node.meta["val"].dim()
+
         if "axis_order" in node.meta:
             axis = node.meta["axis_order"].index(axis)
 

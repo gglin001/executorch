@@ -10,6 +10,7 @@
 #include <executorch/kernels/optimized/vec/vec.h>
 #include <executorch/kernels/portable/cpu/scalar_utils.h>
 #include <executorch/kernels/portable/cpu/util/broadcast_util.h>
+#include <executorch/runtime/core/exec_aten/util/tensor_util.h>
 #include <executorch/runtime/kernel/kernel_includes.h>
 #include <executorch/runtime/platform/assert.h>
 
@@ -32,14 +33,23 @@ Tensor& opt_sub_out(
   ScalarType b_type = b.scalar_type();
   ScalarType out_type = out.scalar_type();
 
-  if (a_type == b_type && a_type == out_type && a.sizes().equals(b.sizes())) {
+  ET_KERNEL_CHECK(ctx, tensor_is_realh_type(out), InvalidArgument, out);
+
+  if (a_type == b_type && a_type == out_type && a.sizes().equals(b.sizes()) &&
+      a_type != ScalarType::Half) {
     // Resize for dynamic shape
     auto error = resize_tensor(out, a.sizes());
-    ET_CHECK_MSG(error == Error::Ok, "Failed to resize output tensor.");
+    ET_KERNEL_CHECK_MSG(
+        ctx,
+        error == Error::Ok,
+        InvalidArgument,
+        out,
+        "Failed to resize output tensor.");
 
     ET_SWITCH_REAL_TYPES(out_type, ctx, "sub.out", CTYPE, [&]() {
       CTYPE alpha_val;
-      ET_EXTRACT_SCALAR(alpha, alpha_val);
+      ET_KERNEL_CHECK(
+          ctx, utils::extract_scalar(alpha, &alpha_val), InvalidArgument, );
 
       using Vec = executorch::vec::Vectorized<CTYPE>;
       executorch::vec::map2<CTYPE>(
@@ -50,8 +60,9 @@ Tensor& opt_sub_out(
           out.numel());
     });
   } else {
-    ScalarType common_type = promoteTypes(a_type, b_type);
-    ET_CHECK(canCast(common_type, out_type));
+    ScalarType common_type =
+        promoteTypes(a_type, b_type, /*half_to_float*/ true);
+    ET_KERNEL_CHECK(ctx, canCast(common_type, out_type), InvalidArgument, out);
 
     ET_KERNEL_CHECK(
         ctx,
@@ -59,12 +70,15 @@ Tensor& opt_sub_out(
         InvalidArgument,
         out);
 
-    ET_SWITCH_REAL_TYPES(a_type, ctx, "sub.out", CTYPE_A, [&]() {
-      ET_SWITCH_REAL_TYPES(b_type, ctx, "sub.out", CTYPE_B, [&]() {
+    ET_SWITCH_REALH_TYPES(a_type, ctx, "sub.out", CTYPE_A, [&]() {
+      ET_SWITCH_REALH_TYPES(b_type, ctx, "sub.out", CTYPE_B, [&]() {
         ET_SWITCH_REAL_TYPES(common_type, ctx, "sub.out", CTYPE_IN, [&]() {
-          ET_SWITCH_REAL_TYPES(out_type, ctx, "sub.out", CTYPE_OUT, [&]() {
+          ET_SWITCH_REALH_TYPES(out_type, ctx, "sub.out", CTYPE_OUT, [&]() {
             CTYPE_IN alpha_val;
-            ET_EXTRACT_SCALAR(alpha, alpha_val);
+            ET_KERNEL_CHECK(
+                ctx,
+                utils::extract_scalar(alpha, &alpha_val),
+                InvalidArgument, );
 
             apply_binary_elementwise_fn<CTYPE_A, CTYPE_B, CTYPE_OUT>(
                 [alpha_val](const CTYPE_A val_a, const CTYPE_B val_b) {
@@ -96,58 +110,66 @@ Tensor& opt_sub_scalar_out(
 
   ScalarType a_type = a.scalar_type();
   ScalarType b_type = utils::get_scalar_dtype(b);
-  ScalarType common_type = utils::promote_type_with_scalar(a_type, b);
+  ScalarType common_type =
+      utils::promote_type_with_scalar(a_type, b, /*half_to_float*/ false);
   ScalarType out_type = out.scalar_type();
 
   ET_CHECK(common_type == out_type);
+
+  if (common_type == ScalarType::Half) {
+    common_type = ScalarType::Float;
+  }
 
   // Resize for dynamic shape
   auto error = resize_tensor(out, a.sizes());
   ET_CHECK_MSG(error == Error::Ok, "Failed to resize output tensor.");
 
-  if (a_type == common_type && a_type == out_type) {
+  if (a_type == common_type && a_type == out_type &&
+      a_type != ScalarType::Half) {
     ET_SWITCH_REAL_TYPES(a_type, ctx, "sub.Scalar_out", CTYPE, [&]() {
-      ET_SWITCH_REAL_TYPES(b_type, ctx, "sub.Scalar_out", CTYPE_B, [&]() {
-        CTYPE_B b_val;
-        ET_EXTRACT_SCALAR(b, b_val);
-        CTYPE b_casted = static_cast<CTYPE>(b_val);
-        CTYPE alpha_val;
-        ET_EXTRACT_SCALAR(alpha, alpha_val);
+      ET_SWITCH_SCALAR_OBJ_REAL_TYPES(
+          b_type, ctx, "sub.Scalar_out", CTYPE_B, [&]() {
+            CTYPE_B b_val;
+            ET_EXTRACT_SCALAR(b, b_val);
+            CTYPE b_casted = static_cast<CTYPE>(b_val);
+            CTYPE alpha_val;
+            ET_EXTRACT_SCALAR(alpha, alpha_val);
 
-        using Vec = executorch::vec::Vectorized<CTYPE>;
-        executorch::vec::map<CTYPE>(
-            [alpha_val, b_casted](Vec x) {
-              return x - Vec(alpha_val * b_casted);
-            },
-            out.mutable_data_ptr<CTYPE>(),
-            a.const_data_ptr<CTYPE>(),
-            out.numel());
-      });
+            using Vec = executorch::vec::Vectorized<CTYPE>;
+            executorch::vec::map<CTYPE>(
+                [alpha_val, b_casted](Vec x) {
+                  return x - Vec(alpha_val * b_casted);
+                },
+                out.mutable_data_ptr<CTYPE>(),
+                a.const_data_ptr<CTYPE>(),
+                out.numel());
+          });
     });
   } else {
-    ET_SWITCH_REAL_TYPES(a_type, ctx, "sub.Scalar_out", CTYPE_A, [&]() {
-      ET_SWITCH_REAL_TYPES(b_type, ctx, "sub.Scalar_out", CTYPE_B, [&]() {
-        ET_SWITCH_REAL_TYPES(
-            common_type, ctx, "sub.Scalar_out", CTYPE_IN, [&]() {
-              ET_SWITCH_REAL_TYPES(
-                  out_type, ctx, "sub.Scalar_out", CTYPE_OUT, [&]() {
-                    CTYPE_B b_val;
-                    ET_EXTRACT_SCALAR(b, b_val);
-                    CTYPE_IN b_casted = static_cast<CTYPE_IN>(b_val);
-                    CTYPE_IN alpha_val;
-                    ET_EXTRACT_SCALAR(alpha, alpha_val);
+    ET_SWITCH_REALH_TYPES(a_type, ctx, "sub.Scalar_out", CTYPE_A, [&]() {
+      ET_SWITCH_SCALAR_OBJ_REAL_TYPES(
+          b_type, ctx, "sub.Scalar_out", CTYPE_B, [&]() {
+            ET_SWITCH_REAL_TYPES(
+                common_type, ctx, "sub.Scalar_out", CTYPE_IN, [&]() {
+                  ET_SWITCH_REALH_TYPES(
+                      out_type, ctx, "sub.Scalar_out", CTYPE_OUT, [&]() {
+                        CTYPE_B b_val;
+                        ET_EXTRACT_SCALAR(b, b_val);
+                        CTYPE_IN b_casted = static_cast<CTYPE_IN>(b_val);
+                        CTYPE_IN alpha_val;
+                        ET_EXTRACT_SCALAR(alpha, alpha_val);
 
-                    const size_t n = a.numel();
-                    const CTYPE_A* a_data = a.const_data_ptr<CTYPE_A>();
-                    CTYPE_OUT* out_data = out.mutable_data_ptr<CTYPE_OUT>();
-                    for (auto i = 0; i < n; ++i) {
-                      out_data[i] = static_cast<CTYPE_OUT>(
-                          static_cast<CTYPE_IN>(a_data[i]) -
-                          alpha_val * b_casted);
-                    }
-                  });
-            });
-      });
+                        const size_t n = a.numel();
+                        const CTYPE_A* a_data = a.const_data_ptr<CTYPE_A>();
+                        CTYPE_OUT* out_data = out.mutable_data_ptr<CTYPE_OUT>();
+                        for (auto i = 0; i < n; ++i) {
+                          out_data[i] = static_cast<CTYPE_OUT>(
+                              static_cast<CTYPE_IN>(a_data[i]) -
+                              alpha_val * b_casted);
+                        }
+                      });
+                });
+          });
     });
   }
 

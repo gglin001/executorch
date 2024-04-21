@@ -1,20 +1,19 @@
 //
 // backend_delegate.mm
 //
-// Copyright © 2023 Apple Inc. All rights reserved.
+// Copyright © 2024 Apple Inc. All rights reserved.
 //
 // Please refer to the license found in the LICENSE file in the root directory of the source tree.
 
-#import "backend_delegate.h"
 
-#import <atomic>
-
-#import <multiarray.h>
-
-#import <ETCoreMLModel.h>
 #import <ETCoreMLAssetManager.h>
+#import <ETCoreMLModel.h>
 #import <ETCoreMLModelManager.h>
 #import <ETCoreMLStrings.h>
+#import <atomic>
+#import <backend_delegate.h>
+#import <model_event_logger.h>
+#import <multiarray.h>
 
 namespace  {
 using namespace executorchcoreml;
@@ -43,44 +42,6 @@ MLModelConfiguration *get_model_configuration(const std::unordered_map<std::stri
     }
     
     return configuration;
-}
-
-template<typename T, typename = typename std::enable_if<std::is_arithmetic<T>::value, T>::type>
-NSArray<NSNumber *> *to_array(const std::vector<T>& array) {
-    NSMutableArray<NSNumber *> *result = [NSMutableArray arrayWithCapacity:array.size()];
-    for (T value : array) {
-        [result addObject:@(value)];
-    }
-    
-    return result;
-}
-
-MLMultiArrayDataType get_data_type(MultiArray::DataType dataType) {
-    switch (dataType) {
-        case MultiArray::DataType::Float16: {
-            return MLMultiArrayDataTypeFloat16;
-        }
-        case MultiArray::DataType::Float: {
-            return MLMultiArrayDataTypeFloat32;
-        }
-        case MultiArray::DataType::Double: {
-            return MLMultiArrayDataTypeFloat64;
-        }
-        case MultiArray::DataType::Int: {
-            return MLMultiArrayDataTypeInt32;
-        }
-    }
-}
-
-MLMultiArray * _Nullable to_ml_multiarray(const MultiArray& array, NSError * __autoreleasing *error) {
-    const auto& layout = array.layout();
-    MLMultiArray *result = [[MLMultiArray alloc] initWithDataPointer:array.data()
-                                                               shape:to_array(layout.shape())
-                                                            dataType:get_data_type(layout.dataType())
-                                                             strides:to_array(layout.strides())
-                                                         deallocator:^(void * _Nonnull bytes) {}
-                                                               error:error];
-    return result;
 }
 
 NSURL * _Nullable create_directory_if_needed(NSURL *url,
@@ -138,15 +99,15 @@ std::string BackendDelegate::ErrorCategory::message(int code) const {
         case ErrorCode::CorruptedModel:
             return "AOT blob has incorrect or missing CoreML model.";
         case ErrorCode::BrokenModel:
-            return "CoreML model doesn't match the input and output specifications";
+            return "CoreML model doesn't match the input and output specifications.";
         case ErrorCode::CompilationFailed:
-            return "CoreML model failed to compile";
+            return "Failed to compile CoreML model.";
         case ErrorCode::ModelSaveFailed:
-            return "Failed to save CoreML model to disk";
+            return "Failed to write CoreML model to disk.";
         case ErrorCode::ModelCacheCreationFailed:
-            return "Failed to create model cache";
+            return "Failed to create model cache.";
         default:
-            return "Unexpected error";
+            return "Unexpected error.";
     }
 }
 
@@ -189,18 +150,17 @@ public:
         return modelHandle;
     }
     
-    bool execute(Handle* handle, const std::vector<MultiArray>& args, std::error_code& ec) const noexcept override {
+    bool execute(Handle* handle,
+                 const std::vector<MultiArray>& args,
+                 const ModelLoggingOptions& logging_options,
+                 ModelEventLogger *event_logger,
+                 std::error_code& ec) const noexcept override {
         NSError *error = nil;
-        NSMutableArray<MLMultiArray *> *model_args = [NSMutableArray arrayWithCapacity:args.size()];
-        for (const auto& arg : args) {
-            MLMultiArray *multi_array = to_ml_multiarray(arg, &error);
-            if (!multi_array) {
-                return false;
-            }
-            [model_args addObject:multi_array];
-        }
-        
-        if (![model_manager_ executeModelWithHandle:handle args:model_args error:&error]) {
+        if (![model_manager_ executeModelWithHandle:handle
+                                            argsVec:args
+                                    loggingOptions:logging_options
+                                        eventLogger:event_logger
+                                              error:&error]) {
             ec = static_cast<ErrorCode>(error.code);
             return false;
         }

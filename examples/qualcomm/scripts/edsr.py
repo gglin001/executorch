@@ -4,19 +4,22 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import json
 import os
 import re
+import sys
 from multiprocessing.connection import Client
 
 import numpy as np
 import piq
 import torch
+from executorch.backends.qualcomm.quantizer.quantizer import QuantDtype
 from executorch.examples.models.edsr import EdsrModel
 from executorch.examples.qualcomm.scripts.utils import (
     build_executorch_binary,
     make_output_dir,
+    parse_skip_delegation_node,
+    setup_common_args_and_variables,
     SimpleADB,
 )
 
@@ -88,68 +91,9 @@ def get_dataset(hr_dir: str, lr_dir: str, default_dataset: str, dataset_dir: str
     return SrDataset(hr_dir, lr_dir)
 
 
-def annotate_forward(gm: torch.fx.GraphModule) -> None:
-    """
-    This function is specific for EDSR. It constructs a nn module, which is
-    inherited from nn.conv2d.
-    The source_fn of the rewritten nn module turns out to be a string "forward"
-    """
-    import itertools
-
-    from executorch.backends.qualcomm.qnn_quantizer import (
-        get_ptq_per_channel_weight_config,
-    )
-    from executorch.backends.qualcomm.qnn_quantizer_utils import (
-        _is_annotated,
-        QUANT_ANNOTATION_KEY,
-    )
-    from torch.ao.quantization.quantize_pt2e import QuantizationAnnotation
-    from torch.fx import Node
-    from torch.fx.passes.utils.source_matcher_utils import get_source_partitions
-
-    conv_partitions = get_source_partitions(gm.graph, ["forward"])
-    conv_partitions = list(itertools.chain(*conv_partitions.values()))
-    quantization_config = get_ptq_per_channel_weight_config()
-    for conv_partition in conv_partitions:
-        if len(conv_partition.output_nodes) > 1:
-            raise ValueError("conv partition has more than one output node")
-        conv_node = conv_partition.output_nodes[0]
-        if (
-            conv_node.op != "call_function"
-            or conv_node.target != torch.ops.aten.conv2d.default
-        ):
-            raise ValueError(f"{conv_node} is not an aten conv2d operator")
-        # skip annotation if it is already annotated
-        if _is_annotated([conv_node]):
-            continue
-
-        input_qspec_map = {}
-        input_act = conv_node.args[0]
-        assert isinstance(input_act, Node)
-        input_spec = quantization_config.input_activation
-        input_qspec_map[input_act] = input_spec
-
-        weight = conv_node.args[1]
-        assert isinstance(weight, Node)
-        input_qspec_map[weight] = quantization_config.weight
-
-        if len(conv_node.args) > 2:
-            bias = conv_node.args[2]
-            if isinstance(bias, Node):
-                if callable(quantization_config.bias):
-                    input_qspec_map[bias] = quantization_config.bias(conv_node)
-                else:
-                    input_qspec_map[bias] = quantization_config.bias
-
-        conv_node.meta[QUANT_ANNOTATION_KEY] = QuantizationAnnotation(
-            input_qspec_map=input_qspec_map,
-            output_qspec=quantization_config.output_activation,
-            _annotated=True,
-        )
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = setup_common_args_and_variables()
+
     parser.add_argument(
         "-a",
         "--artifact",
@@ -157,34 +101,7 @@ if __name__ == "__main__":
         default="./edsr",
         type=str,
     )
-    parser.add_argument(
-        "-b",
-        "--build_folder",
-        help="path to cmake binary directory for android, e.g., /path/to/build_android",
-        type=str,
-        required=True,
-    )
-    parser.add_argument(
-        "-s",
-        "--device",
-        help="serial number for android device communicated via ADB.",
-        type=str,
-        required=True,
-    )
-    parser.add_argument(
-        "-H",
-        "--host",
-        help="hostname where android device is connected.",
-        default=None,
-        type=str,
-    )
-    parser.add_argument(
-        "-m",
-        "--model",
-        help="SoC model of current device. e.g. 'SM8550' for Snapdragon 8 Gen 2.",
-        type=str,
-        required=True,
-    )
+
     parser.add_argument(
         "-r",
         "--hr_ref_dir",
@@ -192,6 +109,7 @@ if __name__ == "__main__":
         default="",
         type=str,
     )
+
     parser.add_argument(
         "-l",
         "--lr_dir",
@@ -199,6 +117,7 @@ if __name__ == "__main__":
         default="",
         type=str,
     )
+
     parser.add_argument(
         "-d",
         "--default_dataset",
@@ -206,37 +125,19 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
-    parser.add_argument(
-        "--ip",
-        help="IPC address for delivering execution result",
-        default="",
-        type=str,
-    )
-    parser.add_argument(
-        "--port",
-        help="IPC port for delivering execution result",
-        default=-1,
-        type=int,
-    )
-
-    # QNN_SDK_ROOT might also be an argument, but it is used in various places.
-    # So maybe it's fine to just use the environment.
-    if "QNN_SDK_ROOT" not in os.environ:
-        raise RuntimeError("Environment variable QNN_SDK_ROOT must be set")
-    print(f"QNN_SDK_ROOT={os.getenv('QNN_SDK_ROOT')}")
-
-    if "LD_LIBRARY_PATH" not in os.environ:
-        print(
-            "[Warning] LD_LIBRARY_PATH is not set. If errors like libQnnHtp.so "
-            "not found happen, please follow setup.md to set environment."
-        )
-    else:
-        print(f"LD_LIBRARY_PATH={os.getenv('LD_LIBRARY_PATH')}")
 
     args = parser.parse_args()
 
+    skip_node_id_set, skip_node_op_set = parse_skip_delegation_node(args)
+
     # ensure the working directory exist.
     os.makedirs(args.artifact, exist_ok=True)
+
+    if not args.compile_only and args.device is None:
+        raise RuntimeError(
+            "device serial is required if not compile only. "
+            "Please specify a device serial by -s/--device argument."
+        )
 
     dataset = get_dataset(
         args.hr_ref_dir, args.lr_dir, args.default_dataset, args.artifact
@@ -252,8 +153,15 @@ if __name__ == "__main__":
         args.model,
         f"{args.artifact}/{pte_filename}",
         [(input,) for input in inputs],
-        custom_annotations=(annotate_forward,),
+        skip_node_id_set=skip_node_id_set,
+        skip_node_op_set=skip_node_op_set,
+        quant_dtype=QuantDtype.use_8a8w,
+        shared_buffer=args.shared_buffer,
     )
+
+    if args.compile_only:
+        sys.exit(0)
+
     # setup required paths accordingly
     # qnn_sdk       : QNN SDK path setup in environment variable
     # artifact_path : path where artifacts were built
@@ -268,6 +176,7 @@ if __name__ == "__main__":
         device_id=args.device,
         host_id=args.host,
         soc_model=args.model,
+        shared_buffer=args.shared_buffer,
     )
     adb.push(inputs=inputs, input_list=input_list)
     adb.execute()

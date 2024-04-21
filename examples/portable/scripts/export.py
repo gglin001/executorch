@@ -9,7 +9,9 @@
 import argparse
 import logging
 
-from executorch.exir.capture import EdgeCompileConfig
+import torch
+
+from executorch.exir.capture import EdgeCompileConfig, ExecutorchBackendConfig
 
 from ...models import MODEL_NAME_TO_MODEL
 from ...models.model_factory import EagerModelFactory
@@ -28,6 +30,13 @@ def main() -> None:
         required=True,
         help=f"provide a model name. Valid ones: {list(MODEL_NAME_TO_MODEL.keys())}",
     )
+
+    parser.add_argument(
+        "-a",
+        "--segment_alignment",
+        required=False,
+        help="specify segment alignment in hex. Default is 0x1000. Use 0x4000 for iOS",
+    )
     parser.add_argument("-o", "--output_dir", default=".", help="output directory")
 
     args = parser.parse_args()
@@ -42,6 +51,9 @@ def main() -> None:
         *MODEL_NAME_TO_MODEL[args.model_name]
     )
 
+    backend_config = ExecutorchBackendConfig(extract_constant_segment=True)
+    if args.segment_alignment is not None:
+        backend_config.segment_alignment = int(args.segment_alignment, 16)
     if (
         dynamic_shapes is not None
     ):  # capture_pre_autograd_graph does not work with dynamic shapes
@@ -53,11 +65,17 @@ def main() -> None:
                 _check_ir_validity=False,
             ),
         )
-        prog = edge_manager.to_executorch()
+        prog = edge_manager.to_executorch(config=backend_config)
     else:
-        prog = export_to_exec_prog(model, example_inputs, dynamic_shapes=dynamic_shapes)
-    save_pte_program(prog.buffer, args.model_name, args.output_dir)
+        prog = export_to_exec_prog(
+            model,
+            example_inputs,
+            dynamic_shapes=dynamic_shapes,
+            backend_config=backend_config,
+        )
+    save_pte_program(prog, args.model_name, args.output_dir)
 
 
 if __name__ == "__main__":
-    main()  # pragma: no cover
+    with torch.no_grad():
+        main()  # pragma: no cover

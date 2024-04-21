@@ -11,18 +11,38 @@ from executorch.backends.xnnpack.test.tester import Tester
 
 
 class TestCat(unittest.TestCase):
-    class Cat(torch.nn.Module):
-        def forward(self, xs):
+    class Cat2(torch.nn.Module):
+        def forward(self, arg1, arg2):
+            xs = [arg1, arg2]
             x = torch.cat(xs)
             return x + x  # Quantize by propagation.
 
-    def _test_cat(self, module, inputs, quant=False, quant_ops=2):
+    class Cat3(torch.nn.Module):
+        def forward(self, arg1, arg2, arg3):
+            xs = [arg1, arg2, arg3]
+            x = torch.cat(xs)
+            return x + x  # Quantize by propagation.
+
+    class Cat4(torch.nn.Module):
+        def forward(self, arg1, arg2, arg3, arg4):
+            xs = [arg1, arg2, arg3, arg4]
+            x = torch.cat(xs)
+            return x + x  # Quantize by propagation.
+
+    class Cat5(torch.nn.Module):
+        def forward(self, arg1, arg2, arg3, arg4, arg5):
+            xs = [arg1, arg2, arg3, arg4, arg5]
+            x = torch.cat(xs)
+            return x + x  # Quantize by propagation.
+
+    def _test_cat(self, module, inputs, cat_num=1, quant=False, quant_ops=2):
         tester = Tester(module, inputs)
 
         if quant:
             tester.quantize()
 
         tester.export().check_count({"torch.ops.aten.cat": 1})
+        tester.dump_artifact()
 
         if quant:
             # Expect multiple quantize ops - one per input, cat, and add.
@@ -31,7 +51,7 @@ class TestCat(unittest.TestCase):
                     # Q/DQ pair for each input and quantized op. For most tests, there are
                     # two quantized ops - cat and add.
                     torch.ops.quantized_decomposed.quantize_per_tensor.default: (
-                        len(inputs[0]) + quant_ops
+                        cat_num + quant_ops
                     )
                 }
             )
@@ -50,63 +70,89 @@ class TestCat(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_cat"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
+    def test_fp16_cat2(self):
+        """
+        Using Clamp2 because fp16 add is done in fp32 ATM. Need to fix that first.
+        """
+        inputs = (
+            torch.ones(1, 2, 3).to(torch.float16),
+            torch.ones(3, 2, 3).to(torch.float16),
+        )
+        self._test_cat(self.Cat2(), inputs)
+
+    def test_fp16_cat3(self):
+        """
+        Using Clamp2 because fp16 add is done in fp32 ATM. Need to fix that first.
+        """
+        inputs = (
+            torch.ones(1, 2, 3).to(torch.float16),
+            torch.ones(3, 2, 3).to(torch.float16),
+            torch.ones(2, 2, 3).to(torch.float16),
+        )
+        self._test_cat(self.Cat3(), inputs)
+
+    def test_fp16_cat4(self):
+        """
+        Using Clamp2 because fp16 add is done in fp32 ATM. Need to fix that first.
+        """
+        inputs = (
+            torch.ones(1, 2, 3).to(torch.float16),
+            torch.ones(3, 2, 3).to(torch.float16),
+            torch.ones(2, 2, 3).to(torch.float16),
+            torch.ones(5, 2, 3).to(torch.float16),
+        )
+        self._test_cat(self.Cat4(), inputs)
+
     def test_fp32_cat2(self):
-        inputs = ((torch.ones(1, 2, 3), torch.ones(3, 2, 3)),)
-        self._test_cat(self.Cat(), inputs)
+        inputs = (torch.ones(1, 2, 3), torch.ones(3, 2, 3))
+        self._test_cat(self.Cat2(), inputs)
 
     def test_fp32_cat3(self):
-        inputs = ((torch.ones(1, 2, 3), torch.ones(3, 2, 3), torch.ones(2, 2, 3)),)
-        self._test_cat(self.Cat(), inputs)
+        inputs = (torch.ones(1, 2, 3), torch.ones(3, 2, 3), torch.ones(2, 2, 3))
+        self._test_cat(self.Cat3(), inputs)
 
     def test_fp32_cat4(self):
         inputs = (
-            (
-                torch.ones(1, 2, 3),
-                torch.ones(3, 2, 3),
-                torch.ones(2, 2, 3),
-                torch.ones(5, 2, 3),
-            ),
+            torch.ones(1, 2, 3),
+            torch.ones(3, 2, 3),
+            torch.ones(2, 2, 3),
+            torch.ones(5, 2, 3),
         )
-        self._test_cat(self.Cat(), inputs)
+        self._test_cat(self.Cat4(), inputs)
 
     def test_qs8_cat2(self):
-        inputs = ((torch.ones(1, 2, 3), torch.ones(3, 2, 3)),)
-        self._test_cat(self.Cat(), inputs, quant=True)
+        inputs = (torch.ones(1, 2, 3), torch.ones(3, 2, 3))
+        self._test_cat(self.Cat2(), inputs, cat_num=2, quant=True)
 
     def test_qs8_cat3(self):
-        inputs = ((torch.ones(1, 2, 3), torch.ones(3, 2, 3), torch.ones(2, 2, 3)),)
-        self._test_cat(self.Cat(), inputs, quant=True)
+        inputs = (torch.ones(1, 2, 3), torch.ones(3, 2, 3), torch.ones(2, 2, 3))
+        self._test_cat(self.Cat3(), inputs, cat_num=3, quant=True)
 
     def test_qs8_cat4(self):
         inputs = (
-            (
-                torch.ones(1, 2, 3),
-                torch.ones(3, 2, 3),
-                torch.ones(2, 2, 3),
-                torch.ones(5, 2, 3),
-            ),
+            torch.ones(1, 2, 3),
+            torch.ones(3, 2, 3),
+            torch.ones(2, 2, 3),
+            torch.ones(5, 2, 3),
         )
-        self._test_cat(self.Cat(), inputs, quant=True)
+        self._test_cat(self.Cat4(), inputs, cat_num=4, quant=True)
 
     def test_fp32_cat_unsupported(self):
         """
         XNNPACK only supports concatenating up to 4 values, so it should not delegate here.
         """
         inputs = (
-            (
-                torch.ones(1, 2, 3),
-                torch.ones(3, 2, 3),
-                torch.ones(2, 2, 3),
-                torch.ones(5, 2, 3),
-                torch.ones(1, 2, 3),
-            ),
+            torch.ones(1, 2, 3),
+            torch.ones(3, 2, 3),
+            torch.ones(2, 2, 3),
+            torch.ones(5, 2, 3),
+            torch.ones(1, 2, 3),
         )
         (
-            Tester(self.Cat(), inputs)
+            Tester(self.Cat5(), inputs)
             .export()
             .check_count({"torch.ops.aten.cat": 1})
             .to_edge()

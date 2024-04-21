@@ -114,6 +114,7 @@ bool check_cat_args(
   // Ensure dim is in range.
   ET_LOG_AND_RETURN_IF_FALSE(
       tensors[ref_i].numel() == 0 || tensors[ref_i].dim() > dim);
+  ET_LOG_AND_RETURN_IF_FALSE(dim >= 0);
 
   return true;
 }
@@ -121,7 +122,7 @@ bool check_cat_args(
 void get_cat_out_target_size(
     exec_aten::ArrayRef<Tensor> tensors,
     int64_t dim,
-    Tensor::SizesType* out_sizes,
+    exec_aten::SizesType* out_sizes,
     size_t* out_ndim) {
   // Find the first non-1D-or-empty tensor in the list to use as a reference
   // because an 1D empty tensor is a wildcard and should be ignored when we
@@ -301,7 +302,7 @@ bool check_unbind_copy_args(const Tensor& in, int64_t dim, TensorList out) {
 void get_permute_copy_out_target_size(
     const Tensor& in,
     IntArrayRef dims,
-    Tensor::SizesType* out_sizes,
+    exec_aten::SizesType* out_sizes,
     size_t* out_ndim) {
   *out_ndim = in.dim();
 
@@ -326,10 +327,10 @@ bool check_pixel_shuffle_args(
 void get_pixel_shuffle_out_target_size(
     const Tensor& in,
     int64_t upscale_factor,
-    Tensor::SizesType* out_sizes,
+    exec_aten::SizesType* out_sizes,
     size_t* out_ndim) {
   *out_ndim = in.dim();
-  const Tensor::SizesType casted_upscale_factor = upscale_factor;
+  const exec_aten::SizesType casted_upscale_factor = upscale_factor;
 
   size_t i = 0;
   for (; i < in.dim() - 3; ++i) {
@@ -360,7 +361,7 @@ bool check_select_copy_out_args(
 void get_select_copy_out_target_size(
     const Tensor& in,
     int64_t dim,
-    Tensor::SizesType* out_sizes,
+    exec_aten::SizesType* out_sizes,
     size_t* out_ndim) {
   *out_ndim = in.dim() - 1;
 
@@ -378,6 +379,7 @@ bool check_slice_copy_args(
     int64_t dim,
     int64_t step,
     Tensor& out) {
+  ET_LOG_AND_RETURN_IF_FALSE(in.dim() > 0);
   ET_LOG_AND_RETURN_IF_FALSE(tensors_have_same_dtype(in, out));
   ET_LOG_AND_RETURN_IF_FALSE(tensor_has_dim(in, dim));
   ET_LOG_MSG_AND_RETURN_IF_FALSE(
@@ -389,7 +391,7 @@ void get_slice_copy_out_target_size(
     const Tensor& in,
     int64_t dim,
     int64_t num_values,
-    Tensor::SizesType* out_sizes,
+    exec_aten::SizesType* out_sizes,
     size_t* out_ndim) {
   *out_ndim = in.dim();
 
@@ -430,7 +432,7 @@ void get_split_with_sizes_copy_out_target_size(
     const Tensor& in,
     int64_t split_size,
     int64_t dim,
-    Tensor::SizesType* out_sizes,
+    exec_aten::SizesType* out_sizes,
     size_t* out_ndim) {
   *out_ndim = in.dim();
 
@@ -453,7 +455,7 @@ bool check_squeeze_copy_dim_args(
 void get_squeeze_copy_dim_out_target_size(
     const Tensor in,
     int64_t dim,
-    Tensor::SizesType* out_sizes,
+    exec_aten::SizesType* out_sizes,
     size_t* out_ndim) {
   // For 0 dim tensors, the output should also be 0 dim.
   if (in.dim() == 0) {
@@ -506,7 +508,7 @@ bool check_squeeze_copy_dims_args(
 void get_squeeze_copy_dims_out_target_size(
     const Tensor in,
     const exec_aten::ArrayRef<int64_t> dims,
-    Tensor::SizesType* out_sizes,
+    exec_aten::SizesType* out_sizes,
     size_t* out_ndim) {
   // For 0 dim tensors, the output should also be 0 dim.
   if (in.dim() == 0) {
@@ -515,7 +517,7 @@ void get_squeeze_copy_dims_out_target_size(
   }
 
   // A dim is only removed if the size at the given dim is 1.
-  Tensor::SizesType dims_to_remove = 0;
+  exec_aten::SizesType dims_to_remove = 0;
   for (size_t i = 0; i < dims.size(); ++i) {
     int64_t dim = dims[i] < 0 ? dims[i] + nonzero_dim(in) : dims[i];
     if (in.size(dim) == 1) {
@@ -572,7 +574,7 @@ bool check_stack_args(
 void get_stack_out_target_size(
     exec_aten::ArrayRef<Tensor> tensors,
     int64_t dim,
-    Tensor::SizesType* out_sizes,
+    exec_aten::SizesType* out_sizes,
     size_t* out_ndim) {
   *out_ndim = tensors[0].dim() + 1;
 
@@ -737,6 +739,8 @@ bool check_unsqueeze_copy_args(
     const Tensor input,
     int64_t dim,
     const Tensor out) {
+  ET_LOG_AND_RETURN_IF_FALSE(dim >= 0);
+
   // The input and out shall share same dtype
   ET_LOG_AND_RETURN_IF_FALSE(tensors_have_same_dtype(input, out));
 
@@ -793,7 +797,11 @@ bool check_view_copy_args(
   ET_LOG_AND_RETURN_IF_FALSE(size_int64_t.size() == out.sizes().size());
 
   // The input and out shall share same dtype and numel
-  ET_LOG_AND_RETURN_IF_FALSE(self.numel() == out.numel());
+  ET_LOG_MSG_AND_RETURN_IF_FALSE(
+      self.numel() == out.numel(),
+      "self.numel() %zd != out.numel() %zd",
+      self.numel(),
+      out.numel());
   ET_LOG_AND_RETURN_IF_FALSE(tensors_have_same_dtype(self, out));
 
   // The size of out should equal target size.
@@ -817,7 +825,7 @@ bool get_view_copy_target_size(
     const Tensor input,
     exec_aten::ArrayRef<int64_t> size_int64_t,
     int64_t dim,
-    Tensor::SizesType* out_sizes) {
+    exec_aten::SizesType* out_sizes) {
   size_t out_numels_without_minus_1 = 1;
   int32_t minus_1_dim = -1;
 
@@ -825,7 +833,7 @@ bool get_view_copy_target_size(
 
   for (size_t i = 0; i < dim; ++i) {
     if (size_int64_t[i] != -1) {
-      out_sizes[i] = static_cast<Tensor::SizesType>(size_int64_t[i]);
+      out_sizes[i] = static_cast<exec_aten::SizesType>(size_int64_t[i]);
       out_numels_without_minus_1 = out_numels_without_minus_1 * size_int64_t[i];
     } else {
       // TODO(kimishpatel): Add test to hit this line
@@ -839,6 +847,67 @@ bool get_view_copy_target_size(
   }
 
   return true;
+}
+
+bool check_diagonal_copy_args(
+    const Tensor& in,
+    int64_t dim1,
+    int64_t dim2,
+    Tensor& out) {
+  ET_LOG_AND_RETURN_IF_FALSE(tensors_have_same_dtype(in, out));
+  ET_LOG_AND_RETURN_IF_FALSE(tensor_has_rank_greater_or_equal_to(in, 2));
+  ET_LOG_AND_RETURN_IF_FALSE(tensor_has_dim(in, dim1));
+  ET_LOG_AND_RETURN_IF_FALSE(tensor_has_dim(in, dim2));
+  if (dim1 < 0) {
+    dim1 += nonzero_dim(in);
+  }
+  if (dim2 < 0) {
+    dim2 += nonzero_dim(in);
+  }
+  ET_LOG_AND_RETURN_IF_FALSE(dim1 != dim2);
+  return true;
+}
+
+void get_diagonal_copy_out_target_size(
+    const Tensor& in,
+    int64_t offset,
+    int64_t dim1,
+    int64_t dim2,
+    exec_aten::SizesType* out_sizes,
+    size_t* out_ndim) {
+  *out_ndim = in.dim() - 1;
+
+  if (dim1 < 0) {
+    dim1 += nonzero_dim(in);
+  }
+  if (dim2 < 0) {
+    dim2 += nonzero_dim(in);
+  }
+
+  size_t diagonal_size = 0;
+  if (offset >= 0) {
+    if (in.size(dim2) <= offset) {
+      diagonal_size = 0;
+    } else {
+      diagonal_size = std::min<size_t>(in.size(dim1), in.size(dim2) - offset);
+    }
+  } else {
+    if (in.size(dim1) <= -offset) {
+      diagonal_size = 0;
+    } else {
+      diagonal_size = std::min<size_t>(in.size(dim1) + offset, in.size(dim2));
+    }
+  }
+
+  size_t shift = 0;
+  for (size_t d = 0; d < in.dim(); ++d) {
+    if (d == dim1 || d == dim2) {
+      shift++;
+    } else {
+      out_sizes[d - shift] = in.size(d);
+    }
+  }
+  out_sizes[in.dim() - 2] = diagonal_size;
 }
 
 } // namespace executor

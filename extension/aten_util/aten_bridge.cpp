@@ -68,6 +68,10 @@ torch::executor::ScalarType torchToExecuTorchScalarType(caffe2::TypeMeta type) {
       return torch::executor::ScalarType::Byte;
     case c10::ScalarType::Char:
       return torch::executor::ScalarType::Char;
+    case c10::ScalarType::Short:
+      return torch::executor::ScalarType::Short;
+    case c10::ScalarType::Half:
+      return torch::executor::ScalarType::Half;
     case c10::ScalarType::Int:
       return torch::executor::ScalarType::Int;
     case c10::ScalarType::Float:
@@ -93,6 +97,10 @@ c10::ScalarType execuTorchtoTorchScalarType(torch::executor::ScalarType type) {
       return c10::ScalarType::Byte;
     case torch::executor::ScalarType::Char:
       return c10::ScalarType::Char;
+    case torch::executor::ScalarType::Short:
+      return c10::ScalarType::Short;
+    case torch::executor::ScalarType::Half:
+      return c10::ScalarType::Half;
     case torch::executor::ScalarType::Int:
       return c10::ScalarType::Int;
     case torch::executor::ScalarType::Float:
@@ -120,8 +128,8 @@ c10::ScalarType execuTorchtoTorchScalarType(torch::executor::ScalarType type) {
  * assumption , a strong one, that, such memory is arena allocated whose
  * lifetime is tied to model's lifetime, we assume that memory is not leaked as
  * it is freed when arean is freed.
- * @param[in] aten_tensor: Input at::Tensor
- * @param[in/out] mutable_et: ETensor whose underlying memory now will alias to
+ * @param[in] aten_tensor Input at::Tensor
+ * @param[in/out] mutable_et ETensor whose underlying memory now will alias to
  * aten_tensor
  */
 void alias_etensor_to_attensor(

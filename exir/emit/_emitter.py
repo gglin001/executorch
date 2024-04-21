@@ -32,8 +32,9 @@ import ctypes
 import hashlib
 import operator
 import typing
+import warnings
 from dataclasses import dataclass, field
-from typing import Callable, cast, Dict, List, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, cast, Dict, List, Mapping, Optional, Tuple, Union
 
 import executorch.exir.memory as memory
 import executorch.extension.pytree as ex_pytree
@@ -87,7 +88,7 @@ from executorch.exir.tensor import (
 )
 from executorch.exir.types import LeafValueSpec, ValueSpec
 
-from torch._export.exported_program import ExportedProgram
+from torch.export.exported_program import ExportedProgram
 from torch.utils import _pytree as pytree
 
 from typing_extensions import TypeAlias
@@ -126,7 +127,6 @@ class _EmitterState:
     values: List[EValue]
     operators: List[Operator]
     delegates: List[BackendDelegate]
-    num_values: int
     operator_cache: Dict[Tuple[str, str], int]
     delegate_cache: Dict[bytes, int]
     emit_stacktrace: bool
@@ -187,6 +187,7 @@ _Argument: TypeAlias = Union[
 _DelegateDebugIdentifierMap: TypeAlias = Union[
     Dict[int, Tuple[int]], Dict[str, Tuple[int]]
 ]
+
 
 # pyre-ignore[13]: Attribute `node` is never initialized.
 class _Emitter(torch.fx.Interpreter):
@@ -377,6 +378,14 @@ class _Emitter(torch.fx.Interpreter):
             self.program_state.cached_spec_hash_values[hashed] = buffer_idx
             self.program_state.constant_buffer.append(buffer)
 
+        if spec.const and spec.nbytes() != len(buffer_data):
+            raise InternalError(
+                self._emit_node_specific_error(
+                    self.node,
+                    f"Tensor spec has buffer of size {len(buffer_data)}, but expected nbytes of {spec.nbytes()}",
+                )
+            )
+
         # For constant tensors, allocation_info = None.
         return EValue(make_tensor_value(buffer_idx, None, spec))
 
@@ -454,14 +463,15 @@ class _Emitter(torch.fx.Interpreter):
             return EValue(Int(layout_enum(val)))
 
         if isinstance(val, torch.memory_format):
-            if val != torch.contiguous_format:
+            try:
+                return EValue(Int(memory_format_enum(val)))
+            except KeyError:
                 raise InternalError(
                     self._emit_node_specific_error(
                         self.node,
-                        "Non contiguous tensors are not supported in ExecuTorch",
+                        f"Tensor has a memory_format that is unsupported in ExecuTorch: {val}",
                     )
                 )
-            return EValue(Int(memory_format_enum(val)))
 
         if isinstance(val, torch.Tensor):
             raise ExportError(
@@ -485,11 +495,9 @@ class _Emitter(torch.fx.Interpreter):
         Given an Evalue, adds it to the emitter_state's values table, and returns the AbstractValue
         representing it.
         """
-        ret = self.emitter_state.num_values
         self.emitter_state.values.append(val)
-        self.emitter_state.num_values += 1
         tensor = val.val if isinstance(val.val, Tensor) else None
-        return _AbstractValue(ret, tensor)
+        return _AbstractValue(len(self.emitter_state.values) - 1, tensor)
 
     def _emit_spec(self, spec: ValueSpec) -> _EmitterValue:
         """Given the provided spec constructs the corresponding EValue from it and then emits it."""
@@ -647,12 +655,15 @@ class _Emitter(torch.fx.Interpreter):
             raise RuntimeError(
                 f"Multiple outputs are not supported. Got {len(subemitter_binding_output_values)}."
             )
-        f, num_mapped_args = args[:2]
+        f, mapped_args, inputs = args
+        assert isinstance(mapped_args, (list, tuple))
+        num_mapped_args: int = len(mapped_args)
         if num_mapped_args != 1:
             raise RuntimeError(
                 f"Emitting map with more than one mapped args is not supported. Got {num_mapped_args}."
             )
-        x, *inputs = args[2:]
+        x = mapped_args[0]
+
         assert isinstance(f, torch.fx.GraphModule)
 
         # Generate the EValue that we will use as our iterator index to keep track of which
@@ -832,6 +843,32 @@ class _Emitter(torch.fx.Interpreter):
                     self.node, f"Unsupported control flow operator: {target}"
                 )
             )
+
+    def _emit_view(self, args: Tuple[_Argument, ...]) -> _EmitterValue:
+        assert len(args) == 2
+
+        self_arg = self._emit_argument(args[0], torch.TensorType)  # pyre-ignore[6]
+        size_arg = self._emit_argument(args[1], torch.ListType.ofInts())
+        out_arg = self._emit_argument(
+            self._emit_spec(self.node.meta["spec"]), torch.TensorType  # pyre-ignore[6]
+        )
+
+        op_idx, op = self._get_operator(
+            name="executorch_prim::et_view",
+            overload="default",
+        )
+        kernel = Instruction(
+            KernelCall(
+                op_idx,
+                args=[
+                    self_arg.id,
+                    size_arg.id,
+                    out_arg.id,
+                ],
+            )
+        )
+        self.chain.instructions.append(kernel)
+        return out_arg
 
     def _add_debug_handle(self, emitter_id: int, target: _Target) -> None:
         """Updates the debug handle information for the current node.
@@ -1187,6 +1224,9 @@ class _Emitter(torch.fx.Interpreter):
             assert len(args) == 1
             return self._emit_spec(self.node.meta["spec"])
 
+        elif target == memory.view:
+            return self._emit_view(args)
+
         elif target == memory.free:
             assert len(args) == 1
             # pyre-ignore
@@ -1257,15 +1297,17 @@ class _TopLevelEmitter(_Emitter):
         self,
         name: str,
         exported_program: ExportedProgram,
+        graph_module: torch.fx.GraphModule,
         program_state: _ProgramState,
         emitter_state: _EmitterState,
     ) -> None:
-        super().__init__(exported_program.graph_module, emitter_state, program_state)
+        super().__init__(graph_module, emitter_state, program_state)
         self.name = name
         self.exported_program = exported_program
 
         self.inputs: List[int] = []
         self.outputs: List[int] = []
+        self.given_mutable_buffer_warning = False
 
         def create_container_str(spec: Optional[pytree.TreeSpec]) -> str:
             if spec is None:
@@ -1284,6 +1326,42 @@ class _TopLevelEmitter(_Emitter):
             inp_container_str, out_container_str
         )
 
+    def _find_fqn_for_placeholder(
+        self, target: _Target, spec: Any  # pyre-ignore[2]
+    ) -> Tuple[Optional[str], bool]:
+        # Find the fully qualified name
+        fqn = None
+        is_mutable_buffer = False
+        if target in self.exported_program.graph_signature.inputs_to_parameters:
+            fqn = self.exported_program.graph_signature.inputs_to_parameters[target]
+
+        elif target in self.exported_program.graph_signature.inputs_to_buffers:
+            fqn = self.exported_program.graph_signature.inputs_to_buffers[target]
+
+            # if the buffer is mutated then record that
+            if fqn in self.exported_program.graph_signature.buffers_to_mutate.values():
+                is_mutable_buffer = True
+                if not self.given_mutable_buffer_warning:
+                    warnings.warn(
+                        "Mutation on a buffer in the model is detected. ExecuTorch assumes "
+                        "buffers that are mutated in the graph have a meaningless initial state, "
+                        "only the shape and dtype will be serialized.",
+                        UserWarning,
+                        stacklevel=1,
+                    )
+                    self.given_mutable_buffer_warning = True
+
+        elif (
+            target
+            in self.exported_program.graph_signature.inputs_to_lifted_tensor_constants
+        ):
+            fqn = (
+                self.exported_program.graph_signature.inputs_to_lifted_tensor_constants[
+                    target
+                ]
+            )
+        return fqn, is_mutable_buffer
+
     def placeholder(
         self, target: _Target, args: Tuple[_Argument, ...], kwargs: Dict[str, _Argument]
     ) -> _AbstractValue:
@@ -1293,28 +1371,57 @@ class _TopLevelEmitter(_Emitter):
         https://pytorch.org/docs/stable/fx.html#torch.fx.Graph.placeholder
         """
         spec = self.node.meta["spec"]
-        const_tensor = False
-        if isinstance(target, str) and (
-            target in self.exported_program.graph_signature.inputs_to_parameters
-            or target in self.exported_program.graph_signature.inputs_to_buffers
-        ):
+        is_user_input = True
 
-            fqn = (
-                self.exported_program.graph_signature.inputs_to_parameters[target]
-                if target in self.exported_program.graph_signature.inputs_to_parameters
-                else self.exported_program.graph_signature.inputs_to_buffers[target]
-            )
-            spec = TensorSpec.from_tensor(
-                self.exported_program.state_dict[fqn], const=True
-            )
-            const_tensor = True
+        if isinstance(target, str) and isinstance(spec, TensorSpec):
+
+            fqn, is_mutable_buffer = self._find_fqn_for_placeholder(target, spec)
+
+            # From the fqn find the corresponding tensor
+            real_tensor = None
+            if fqn in self.exported_program.state_dict:
+                real_tensor = self.exported_program.state_dict[fqn]
+                is_user_input = False
+
+            elif fqn in self.exported_program.constants:
+                real_tensor = self.exported_program.constants[fqn]
+                is_user_input = False
+            elif fqn is not None:
+                buffers = self.exported_program.named_buffers()
+                buf = next((x[1] for x in buffers if x[0] == fqn), None)
+                if buf is not None:
+                    real_tensor = buf
+                    is_user_input = False
+                else:
+                    raise InternalError(
+                        self._emit_node_specific_error(
+                            self.node,
+                            f"Could not find buffer with fqn {fqn} in state_dict or named_buffers",
+                        )
+                    )
+
+            # assign the storage of the placeholder spec to the storage of the real tensor if there is one
+            if real_tensor is not None:
+                # for non-contigous tensors, convert to a contiguous one
+                real_tensor = real_tensor.contiguous()
+                # Weights cannot be views during emission or serialization
+                if real_tensor.nbytes != real_tensor.untyped_storage().nbytes():
+                    real_tensor = real_tensor.clone()
+
+                spec.storage = real_tensor.untyped_storage()
+
+            # User inputs and mutable buffers are not constants, other buffers or parameters are.
+            spec.const = not (is_user_input or is_mutable_buffer)
+
         evalue = (
             self._tensor_spec_to_evalue(spec)
             if isinstance(spec, TensorSpec)
             else self._constant_to_evalue(spec, None)
         )
         value = self._emit_evalue(evalue)
-        if not const_tensor:
+
+        # Only user inputs should remain as inputs.
+        if is_user_input:
             self.inputs.append(value.id)
 
         return value
@@ -1331,9 +1438,20 @@ class _TopLevelEmitter(_Emitter):
             self.outputs.append(args_tuple.id)
         else:
             for arg in args_tuple:
-                # Every output should already have its value emitted outputs should only be abstract
-                # IDs at this point.
-                assert isinstance(arg, _AbstractValue)
+                if isinstance(arg, (int, float, bool, type(None))):
+                    arg = self._emit_evalue(self._constant_to_evalue(arg, None))
+                elif isinstance(arg, str):
+                    # TODO(jackkhuu): T181599879 Add support for string outputs IFF compiler supports
+                    raise InternalError(
+                        self._emit_node_specific_error(
+                            self.node,
+                            f"Returning {arg} is not yet supported in the emitter.",
+                        )
+                    )
+                else:
+                    # Every other output should already have its value emitted.
+                    # They should only be abstract IDs at this point.
+                    assert isinstance(arg, _AbstractValue)
                 self.outputs.append(arg.id)
 
     def plan(self) -> ExecutionPlan:

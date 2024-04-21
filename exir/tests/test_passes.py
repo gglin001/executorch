@@ -15,7 +15,7 @@ import executorch.exir as exir
 # Import passes
 import executorch.exir.memory_planning  # noqa
 import torch
-from executorch.exir import EdgeCompileConfig, memory, to_edge
+from executorch.exir import EdgeCompileConfig, EdgeProgramManager, memory, to_edge
 from executorch.exir.dialects._ops import bind_pattern_to_op, ops, ops as exir_ops
 from executorch.exir.dialects.edge._ops import EdgeOpOverload
 from executorch.exir.emit import emit_program
@@ -33,13 +33,24 @@ from executorch.exir.passes import (
 )
 from executorch.exir.passes.constant_prop_pass import constant_prop_pass
 from executorch.exir.passes.debug_handle_generator_pass import DebugHandleGeneratorPass
-from executorch.exir.passes.remove_assert_async_pass import RemoveAssertAsyncPass
+from executorch.exir.passes.insert_write_back_for_buffers_pass import (
+    insert_write_back_for_buffers_pass,
+)
+from executorch.exir.passes.normalize_view_copy_base_pass import (
+    NormalizeViewCopyBasePass,
+)
+
+from executorch.exir.passes.remove_graph_asserts_pass import RemoveGraphAssertsPass
 from executorch.exir.passes.remove_mixed_type_operators import RemoveMixedTypeOperators
 from executorch.exir.passes.replace_edge_with_backend_pass import EdgeToBackendOpsPass
+from executorch.exir.passes.replace_view_copy_with_view_pass import (
+    ReplaceViewCopyWithViewPass,
+)
 from executorch.exir.passes.scalar_to_tensor_pass import ScalarToTensorPass
 from executorch.exir.passes.spec_prop_pass import SpecPropPass
 from executorch.exir.passes.sym_to_tensor_pass import SymToTensorPass
 from executorch.exir.program._program import lift_constant_tensor_pass
+from executorch.exir.schema import TensorShapeDynamism
 from executorch.exir.tensor import TensorSpec
 from executorch.exir.tests.common import register_additional_test_aten_ops
 from executorch.exir.tests.control_flow_models import FTCondDeadCode, FTMapBasic
@@ -47,7 +58,14 @@ from executorch.exir.tests.models import MLP, Mul
 from functorch.experimental import control_flow
 
 from torch import nn
+
+from torch.ao.quantization.quantize_pt2e import convert_pt2e, prepare_pt2e
+from torch.ao.quantization.quantizer.xnnpack_quantizer import (
+    get_symmetric_quantization_config,
+    XNNPACKQuantizer,
+)
 from torch.export import export
+from torch.export.graph_signature import InputKind, InputSpec, TensorArgument
 from torch.fx import GraphModule, subgraph_rewriter
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.library import impl, Library
@@ -99,8 +117,11 @@ class TestPasses(unittest.TestCase):
         register_additional_test_aten_ops()
 
     def test_remove_mixed_type_operators(self) -> None:
-        def add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-            return (x + y) + x
+        class Add(torch.nn.Module):
+            def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+                return (x + y) + x
+
+        add = Add()
 
         int_tensor = torch.tensor([[1, 2, 3]])
         float_tensor = torch.tensor([[1.0, 2.0, 3.0]])
@@ -152,8 +173,11 @@ class TestPasses(unittest.TestCase):
 
         self.assertEqual(add_count_double, 2)
 
-        def mult(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-            return x * y
+        class Mult(torch.nn.Module):
+            def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+                return x * y
+
+        mult = Mult()
 
         float_tensor_vert = float_tensor.T
         mult_prog = to_edge(
@@ -184,8 +208,11 @@ class TestPasses(unittest.TestCase):
         self.assertEqual(mult_count, 1)
 
     def test_remove_noop_pass(self) -> None:
-        def foo(x: torch.Tensor) -> torch.Tensor:
-            return x.to(dtype=torch.float32)
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return x.to(dtype=torch.float32)
+
+        foo = Foo()
 
         # Turn off functionalization so that we can get the actual to.dtype op
         edge_prog = to_edge(
@@ -202,14 +229,23 @@ class TestPasses(unittest.TestCase):
                 self.assertNotEqual(node.target, torch.ops.aten.to.dtype)
 
     def test_redundant_slice_copy_removal(self) -> None:
-        def foo_with_no_slice(x: torch.Tensor) -> torch.Tensor:
-            return x[:, :, :]
+        class FooWithNoSlice(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return x[:, :, :]
 
-        def foo_with_one_slice(x: torch.Tensor) -> torch.Tensor:
-            return x[:1, :, :]
+        foo_with_no_slice = FooWithNoSlice()
 
-        def foo_with_all_slices(x: torch.Tensor) -> torch.Tensor:
-            return x[:1, :2, 2:4]
+        class FooWithOneSlice(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return x[:1, :, :]
+
+        foo_with_one_slice = FooWithOneSlice()
+
+        class FooWithAllSlices(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return x[:1, :2, 2:4]
+
+        foo_with_all_slices = FooWithAllSlices()
 
         # Turn off functionalization so that we can get the actual to.dtype op
         x = torch.ones((3, 8, 8))
@@ -250,8 +286,11 @@ class TestPasses(unittest.TestCase):
         ).run(new_graph_module.code)
 
     def test_compile_to_edge(self) -> None:
-        def f(x: torch.Tensor) -> torch.Tensor:
-            return x * 2
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return x * 2
+
+        f = Foo()
 
         x = (torch.randn(2, 3),)
 
@@ -408,13 +447,16 @@ class TestPasses(unittest.TestCase):
                 (inputs,),
             )
         )
-        edge_res = edge_dialect.exported_program()(inputs)
+        edge_res = edge_dialect.exported_program().module()(inputs)
         self.assertTrue(torch.allclose(model_res, edge_res))
 
     def test_export_pass(self) -> None:
-        def f(x: torch.Tensor) -> List[torch.Tensor]:
-            y = torch.cat([x, x])
-            return torch.ops.aten.tensor_split.sections(y, 2)
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
+                y = torch.cat([x, x])
+                return torch.ops.aten.tensor_split.sections(y, 2)
+
+        f = Foo()
 
         class NullPass(ExportPass):
             pass
@@ -441,9 +483,12 @@ class TestPasses(unittest.TestCase):
             self.assertEqual(new_node.target, old_node.target)
 
     def test_export_pass_pt2(self) -> None:
-        def f(x: torch.Tensor) -> List[torch.Tensor]:
-            y = torch.cat([x, x])
-            return torch.ops.aten.tensor_split.sections(y, 2)
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
+                y = torch.cat([x, x])
+                return torch.ops.aten.tensor_split.sections(y, 2)
+
+        f = Foo()
 
         class NullPass(ExportPass):
             pass
@@ -470,8 +515,11 @@ class TestPasses(unittest.TestCase):
             self.assertEqual(new_node.target, old_node.target)
 
     def test_export_scalar_to_tensor_pass(self) -> None:
-        def mul(x: torch.Tensor) -> torch.Tensor:
-            return x * 3.14
+        class Mul(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return x * 3.14
+
+        mul = Mul()
 
         expo_prog = to_edge(export(mul, (torch.ones(1),)))
         new_prog = expo_prog.transform([ScalarToTensorPass()])
@@ -481,7 +529,8 @@ class TestPasses(unittest.TestCase):
         inp = torch.zeros(1)
         self.assertTrue(
             torch.allclose(
-                expo_prog.exported_program()(inp), new_prog.exported_program()(inp)
+                expo_prog.exported_program().module()(inp),
+                new_prog.exported_program().module()(inp),
             )
         )
         for node in new_graph_module.graph.nodes:
@@ -490,14 +539,17 @@ class TestPasses(unittest.TestCase):
                     self.assertFalse(isinstance(arg, float))
 
     def test_remove_mixed_types_symfloats(self) -> None:
-        def f(x: torch.Tensor) -> torch.Tensor:
-            return torch.nn.functional.interpolate(
-                x,
-                size=(x.shape[2] * 2, x.shape[3] * 3),
-                mode="bilinear",
-                align_corners=False,
-                antialias=False,
-            )
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return torch.nn.functional.interpolate(
+                    x,
+                    size=(x.shape[2] * 2, x.shape[3] * 3),
+                    mode="bilinear",
+                    align_corners=False,
+                    antialias=False,
+                )
+
+        f = Foo()
 
         example_inputs = (torch.randn(2, 3, 4, 5),)
 
@@ -514,14 +566,17 @@ class TestPasses(unittest.TestCase):
 
         self.assertTrue(
             torch.allclose(
-                gm.exported_program()(*example_inputs),
-                new_gm.exported_program()(*example_inputs),
+                gm.exported_program().module()(*example_inputs),
+                new_gm.exported_program().module()(*example_inputs),
             )
         )
 
     def test_spec_prop_pass(self) -> None:
-        def f(x: torch.Tensor) -> torch.Tensor:
-            return x + x
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return x + x
+
+        f = Foo()
 
         gm = (
             to_edge(
@@ -546,8 +601,11 @@ class TestPasses(unittest.TestCase):
         self.assertEqual(counter, 1)
 
     def test_spec_prop_pass_tuple_output(self) -> None:
-        def f(x: torch.Tensor) -> Tuple[torch.Tensor]:
-            return (x + x,)
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor]:
+                return (x + x,)
+
+        f = Foo()
 
         gm = (
             to_edge(
@@ -577,8 +635,15 @@ class TestPasses(unittest.TestCase):
         x = torch.randn([2, 3, 4, 5])
         model: torch.nn.Linear = torch.nn.Linear(5, 5)
 
-        def f(inp: torch.Tensor) -> torch.Tensor:
-            return model(inp)
+        class Foo(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = model
+
+            def forward(self, inp: torch.Tensor) -> torch.Tensor:
+                return self.model(inp)
+
+        f = Foo()
 
         # ReplaceBrokenOpsWithFunctionalOpsPass is used in to_edge()
         prog = to_edge(
@@ -594,11 +659,14 @@ class TestPasses(unittest.TestCase):
             if node.target == torch.ops.aten._unsafe_view.default:
                 count_after += 1
         self.assertEqual(count_after, 0)
-        self.assertTrue(torch.allclose(prog.exported_program()(x), f(x)))
+        self.assertTrue(torch.allclose(prog.exported_program().module()(x), f(x)))
 
     def test_convert_symb_ops(self) -> None:
-        def f(x: torch.Tensor) -> torch.Tensor:
-            return torch.add(x, x.shape[0] - 1)
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return torch.add(x, x.shape[0] - 1)
+
+        f = Foo()
 
         # Mark the 0th dimension of X as dynamic with a max value of 3.
         dim_x = torch.export.Dim("dim_x", max=3)
@@ -690,11 +758,14 @@ class TestPasses(unittest.TestCase):
         self.assertFalse(torch.ops.aten.sub.Tensor in collect_ops(gm))
 
     def test_propagate_dynamic_shape(self) -> None:
-        def f(x: torch.Tensor) -> torch.Tensor:
-            y = x
-            for _ in range(2):
-                y = y + x
-            return y
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                y = x
+                for _ in range(2):
+                    y = y + x
+                return y
+
+        f = Foo()
 
         prog = to_edge(
             export(
@@ -719,8 +790,11 @@ class TestPasses(unittest.TestCase):
         future ExportPass will encounter symbolic information loss.
         """
 
-        def f(x: torch.Tensor) -> torch.Tensor:
-            return torch.add(x, x.shape[0] - 1)
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return torch.add(x, x.shape[0] - 1)
+
+        f = Foo()
 
         dim_x = torch.export.Dim("dim_x", max=3)
         prog = to_edge(
@@ -751,8 +825,11 @@ class TestPasses(unittest.TestCase):
     def test_to_edge_with_edge_ops(self) -> None:
         x = torch.randn([2, 3, 4, 5])
 
-        def f(x: torch.Tensor) -> torch.Tensor:
-            return x + x
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return x + x
+
+        f = Foo()
 
         gm = (
             to_edge(
@@ -773,9 +850,12 @@ class TestPasses(unittest.TestCase):
     def test_backend_fused_op_retraceable(self) -> None:
         """This test makes sure the backend op is still retraceable, with the pattern being registered as kernel."""
 
-        def f(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-            z = x + y
-            return torch.ops.aten.relu.default(z)
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+                z = x + y
+                return torch.ops.aten.relu.default(z)
+
+        f = Foo()
 
         gm = export(
             f,
@@ -841,7 +921,7 @@ class TestPasses(unittest.TestCase):
         # If not backend op retrace will error out because no CPU/CompositeExplicitAutograd kernel registered.
         gm_retraced = to_edge(
             export(
-                gm_lowered.exported_program(),
+                gm_lowered.exported_program().module(),
                 (
                     torch.randn(2, 2),
                     torch.randn(2, 2),
@@ -898,11 +978,18 @@ class TestPasses(unittest.TestCase):
             x = x + y
             return x.sin()
 
-        def f(
-            xs: torch.Tensor, pred1: torch.Tensor, pred2: torch.Tensor, y: torch.Tensor
-        ) -> torch.Tensor:
-            y = torch.mm(y, y)
-            return control_flow.map(map_fn, xs, pred1, pred2, y)
+        class Foo(torch.nn.Module):
+            def forward(
+                self,
+                xs: torch.Tensor,
+                pred1: torch.Tensor,
+                pred2: torch.Tensor,
+                y: torch.Tensor,
+            ) -> torch.Tensor:
+                y = torch.mm(y, y)
+                return control_flow.map(map_fn, xs, pred1, pred2, y)
+
+        f = Foo()
 
         inputs = (
             torch.ones(2, 2),
@@ -944,8 +1031,11 @@ class TestPasses(unittest.TestCase):
         check_debug_handle_metadata(graph_module)
 
     def test_symint_conversion(self) -> None:
-        def f(x: torch.Tensor) -> torch.Tensor:
-            return torch.add(x, x.shape[0] - 1)
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return torch.add(x, x.shape[0] - 1)
+
+        f = Foo()
 
         dim_x = torch.export.Dim("dim_x", max=3)
         prog = to_edge(
@@ -963,19 +1053,23 @@ class TestPasses(unittest.TestCase):
         ).run(prog.exported_program().graph_module.code)
         self.assertTrue(
             torch.allclose(
-                f(torch.ones(3, 2)), prog.exported_program()(torch.ones(3, 2))
+                f(torch.ones(3, 2)), prog.exported_program().module()(torch.ones(3, 2))
             )
         )
         self.assertTrue(
             torch.allclose(
-                f(torch.zeros(3, 2)), prog.exported_program()(torch.zeros(3, 2))
+                f(torch.zeros(3, 2)),
+                prog.exported_program().module()(torch.zeros(3, 2)),
             )
         )
 
     def test_remove_assert_pass(self) -> None:
-        def f(x: torch.Tensor) -> torch.Tensor:
-            assert x.shape[0] == 5
-            return x * x
+        class Foo(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                assert x.shape[0] == 5
+                return x * x
+
+        f = Foo()
 
         gm = to_edge(
             export(
@@ -984,7 +1078,7 @@ class TestPasses(unittest.TestCase):
             ),
             compile_config=exir.EdgeCompileConfig(_check_ir_validity=False),
         )
-        new_gm = gm.transform([RemoveAssertAsyncPass()])
+        new_gm = gm.transform([RemoveGraphAssertsPass()])
         num_asserts = [
             node
             for node in new_gm.exported_program().graph.nodes
@@ -1033,24 +1127,29 @@ class TestPasses(unittest.TestCase):
         ).run(gm.code)
 
     def test_constant_prop_pass_for_add(self) -> None:
-        def add(x: torch.Tensor) -> torch.Tensor:
-            return x + 3
+        class Add(torch.nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return x + 3
+
+        add = Add()
 
         edge = to_edge(export(add, (torch.ones(1),)))
         edge = edge.transform([ScalarToTensorPass(), RemoveMixedTypeOperators()])
-        edge.exported_program = lift_constant_tensor_pass(edge.exported_program())
+        exported_program = lift_constant_tensor_pass(edge.exported_program())
 
         # Check there is a lifted tensor followed by a to_copy node
         FileCheck().check("_lifted_tensor_constant0").check(
-            "torch.ops.aten._to_copy.default"
-        ).run(edge.exported_program().graph_module.code)
+            "executorch_exir_dialects_edge__ops_aten__to_copy_default"
+        ).run(exported_program.graph_module.code)
 
-        new_ep = constant_prop_pass(edge.exported_program())
+        new_ep = constant_prop_pass(exported_program)
 
         # Check (_lifted_tensor_constant + to_copy) node is replaced by prop tensor
         FileCheck().check_not("_lifted_tensor_constant").check(
-            "_prop_tensor_constant1"
-        ).check_not("torch.ops.aten._to_copy.default").run(new_ep.graph_module.code)
+            "_prop_tensor_constant0"
+        ).check_not("executorch_exir_dialects_edge__ops_aten__to_copy_default").run(
+            new_ep.graph_module.code
+        )
 
     def test_constant_prop_pass_for_parameter(self) -> None:
         def count_additions(gm: torch.fx.GraphModule) -> int:
@@ -1075,6 +1174,105 @@ class TestPasses(unittest.TestCase):
         self.assertEqual(count_additions(aten.graph_module), 3)
         new_ep = constant_prop_pass(aten)
         self.assertEqual(count_additions(new_ep.graph_module), 1)
+
+    def test_constant_prop_pass_graph_signature(self) -> None:
+        def count_additions(gm: torch.fx.GraphModule) -> int:
+            return sum(
+                (node.target == torch.ops.aten.add.Tensor) for node in gm.graph.nodes
+            )
+
+        class M(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.a = torch.nn.Parameter(torch.ones(1, 2, 3))
+
+            def forward(self, x):
+                b = self.a + self.a
+                c = torch.cat([self.a, b])
+                return (c + c) + x
+
+        aten = export(
+            M(),
+            (torch.zeros(2, 2, 3),),
+        )
+        # Input signature will have two entries:
+        # (1) parameter `a` and (2) user input `x`.
+        self.assertEqual(len(aten.graph_signature.input_specs), 2)
+        new_ep = constant_prop_pass(aten)
+        # Check that there are exactly two propagated tensors - (1) propagated
+        # constant and (2) user input.
+        self.assertEqual(
+            new_ep.graph_signature.input_specs,
+            [
+                InputSpec(
+                    kind=InputKind.CONSTANT_TENSOR,
+                    arg=TensorArgument(name="_prop_tensor_constant0"),
+                    target="_prop_tensor_constant0",
+                    persistent=True,
+                ),
+                # User input graph signature.
+                aten.graph_signature.input_specs[-1],
+            ],
+        )
+
+    def test_constant_prop_pass_for_parameter_slice(self) -> None:
+        def count_slice(gm: torch.fx.GraphModule) -> int:
+            return sum(
+                (node.target == torch.ops.aten.slice_copy.Tensor)
+                for node in gm.graph.nodes
+            )
+
+        class M(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.a = torch.nn.Parameter(torch.ones(3, 2, 2))
+
+            def forward(self, x):
+                # Create slice of shape (1, 2, 2)
+                slice_tensor = torch.slice_copy(self.a, dim=0, start=0, end=1)
+                return torch.cat([x, slice_tensor])
+
+        aten = export(
+            M(),
+            (torch.zeros(2, 2, 2),),
+        )
+        self.assertIn("a", aten.state_dict)
+        self.assertEqual(count_slice(aten.graph_module), 1)
+
+        new_ep = constant_prop_pass(aten)
+        # Check there is a propagated tensor.
+        FileCheck().check("_prop_tensor_constant0").run(aten.graph_module.code)
+        self.assertIn("_prop_tensor_constant0", new_ep.constants)
+        self.assertNotIn("a", new_ep.state_dict)
+        # No more slice copy.
+        self.assertEqual(count_slice(new_ep.graph_module), 0)
+
+    def test_constant_prop_pass_no_propagate(self) -> None:
+        def count_placeholder(gm: torch.fx.GraphModule) -> int:
+            return sum((node.op == "placeholder") for node in gm.graph.nodes)
+
+        class M(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.a = torch.nn.Parameter(torch.ones(3, 2, 4))
+
+            def forward(self, x, y):
+                # y is unused.
+                return x + self.a
+
+        aten = export(
+            M(),
+            (torch.zeros(3, 2, 4), torch.zeros(3, 2, 4)),
+        )
+        self.assertIn("a", aten.state_dict)
+        self.assertEqual(count_placeholder(aten.graph_module), 3)
+
+        new_ep = constant_prop_pass(aten)
+        # Check there is no propagated tensor.
+        FileCheck().check("p_a").check("x").check("y").run(aten.graph_module.code)
+        self.assertNotIn("_prop_tensor_constant0", new_ep.constants)
+        self.assertIn("a", new_ep.state_dict)
+        self.assertEqual(count_placeholder(new_ep.graph_module), 3)
 
     def test_constant_prop_pass_for_control_flow(self) -> None:
         class Module(torch.nn.Module):
@@ -1114,3 +1312,326 @@ class TestPasses(unittest.TestCase):
             error_msg,
         ):
             _ = constant_prop_pass(edge.exported_program())
+
+    def test_mutable_buffers(self) -> None:
+        def count_copies(gm: torch.fx.GraphModule) -> int:
+            return sum(
+                (node.target == torch.ops.aten.copy_.default) for node in gm.graph.nodes
+            )
+
+        class MutableStateModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.register_buffer("state", torch.zeros(1))
+
+            def forward(self, x):
+                y = x + self.state
+                self.state.add_(1)
+                return y
+
+        model = to_edge(
+            export(
+                MutableStateModule(),
+                (torch.zeros(1),),
+            )
+        )
+        self.assertEqual(count_copies(model.exported_program().graph_module), 0)
+        # Before
+        # graph():
+        #     %arg0_1 : [num_users=2] = placeholder[target=arg0_1]
+        #     %_lifted_tensor_constant1 : [num_users=1] = placeholder[target=_lifted_tensor_constant1]
+        #     %arg1_1 : [num_users=1] = placeholder[target=arg1_1]
+        #     %aten_add_tensor : [num_users=1] = call_function[target=executorch.exir.dialects.edge._ops.aten.add.Tensor](args = (%arg1_1, %arg0_1), kwargs = {})
+        #     %aten__to_copy_default : [num_users=1] = call_function[target=executorch.exir.dialects.edge._ops.aten._to_copy.default](args = (%_lifted_tensor_constant1,), kwargs = {dtype: torch.float32})
+        #     %aten_add_tensor_1 : [num_users=1] = call_function[target=executorch.exir.dialects.edge._ops.aten.add.Tensor](args = (%arg0_1, %aten__to_copy_default), kwargs = {})
+        #     return (aten_add_tensor_1, aten_add_tensor)
+        gm, _ = insert_write_back_for_buffers_pass(model.exported_program())
+
+        # After
+        # graph():
+        #     %arg0_1 : [num_users=3] = placeholder[target=arg0_1]
+        #     %_lifted_tensor_constant1 : [num_users=1] = placeholder[target=_lifted_tensor_constant1]
+        #     %arg1_1 : [num_users=1] = placeholder[target=arg1_1]
+        #     %aten_add_tensor : [num_users=1] = call_function[target=executorch.exir.dialects.edge._ops.aten.add.Tensor](args = (%arg1_1, %arg0_1), kwargs = {})
+        #     %aten__to_copy_default : [num_users=1] = call_function[target=executorch.exir.dialects.edge._ops.aten._to_copy.default](args = (%_lifted_tensor_constant1,), kwargs = {dtype: torch.float32})
+        #     %aten_add_tensor_1 : [num_users=1] = call_function[target=executorch.exir.dialects.edge._ops.aten.add.Tensor](args = (%arg0_1, %aten__to_copy_default), kwargs = {})
+        #     %copy__default : [num_users=1] = call_function[target=torch.ops.aten.copy_.default](args = (%arg0_1, %aten_add_tensor_1), kwargs = {})
+        #     return (copy__default, aten_add_tensor)
+        self.assertEqual(count_copies(gm), 1)
+
+    def test_remove_quantized_op_noop_pass(self) -> None:
+        class TestAddSliceNoop(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+
+            def forward(self, x):
+                x = x + x
+                x = x + x[:]
+                return x
+
+        class TestAddSliceNotNoop(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+
+            def forward(self, x):
+                x = x + x
+                x = x + x[:1]
+                return x
+
+        def count_dq_nodes(gm: torch.fx.GraphModule) -> int:
+            return sum(
+                (
+                    node.target
+                    in (
+                        torch.ops.quantized_decomposed.dequantize_per_tensor.default,
+                        exir_ops.edge.quantized_decomposed.dequantize_per_tensor.default,
+                    )
+                )
+                for node in gm.graph.nodes
+            )
+
+        def count_q_nodes(gm: torch.fx.GraphModule) -> int:
+            return sum(
+                (
+                    node.target
+                    in (
+                        torch.ops.quantized_decomposed.quantize_per_tensor.default,
+                        exir_ops.edge.quantized_decomposed.quantize_per_tensor.default,
+                    )
+                )
+                for node in gm.graph.nodes
+            )
+
+        def quantize_model(
+            m_eager: torch.nn.Module, example_inputs: Tuple[torch.Tensor]
+        ) -> Tuple[EdgeProgramManager, int, int]:
+            # program capture
+            m = torch._export.capture_pre_autograd_graph(
+                m_eager,
+                example_inputs,
+            )
+
+            quantizer = XNNPACKQuantizer()
+            quantization_config = get_symmetric_quantization_config()
+            quantizer.set_global(quantization_config)
+            m = prepare_pt2e(m, quantizer)
+            m = convert_pt2e(m, fold_quantize=True)
+            ep = torch.export.export(m, example_inputs)
+            dq_nodes_pre = count_dq_nodes(ep.graph_module)
+            q_nodes_pre = count_q_nodes(ep.graph_module)
+            edge = to_edge(
+                ep, compile_config=EdgeCompileConfig(_check_ir_validity=False)
+            )
+            return edge, dq_nodes_pre, q_nodes_pre
+
+        example_inputs = (torch.randn(9, 8),)
+        model = TestAddSliceNoop()
+        m_eager = model.eval()
+        edge, dq_nodes_pre, q_nodes_pre = quantize_model(m_eager, example_inputs)
+
+        dq_nodes_post = count_dq_nodes(edge.exported_program().graph_module)
+        q_nodes_post = count_q_nodes(edge.exported_program().graph_module)
+        # One dq and one q node around the slice copy should have been removed.
+        self.assertEqual(dq_nodes_pre - dq_nodes_post, 1)
+        self.assertEqual(q_nodes_pre - q_nodes_post, 1)
+
+        # Check that the slice_copy is removed by the RemoveNoopPass.
+        for node in edge.exported_program().graph_module.graph.nodes:
+            self.assertFalse("slice" in str(node.target))
+
+        model = TestAddSliceNotNoop()
+        m_eager = model.eval()
+        edge, dq_nodes_pre, q_nodes_pre = quantize_model(m_eager, example_inputs)
+
+        dq_nodes_post = count_dq_nodes(edge.exported_program().graph_module)
+        q_nodes_post = count_q_nodes(edge.exported_program().graph_module)
+        # One dq and one q node around the slice copy should have been removed.
+        self.assertEqual(dq_nodes_pre, dq_nodes_post)
+        self.assertEqual(q_nodes_pre, q_nodes_post)
+
+        # Check that the slice_copy is not removed by the RemoveNoopPass.
+        self.assertTrue(
+            any(
+                "slice" in str(node.target)
+                for node in edge.exported_program().graph_module.graph.nodes
+            )
+        )
+
+    def test_dq_q_no_op_pass(self) -> None:
+        class TestDqQ(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+
+            def forward(self, x):
+                dq = torch.ops.quantized_decomposed.dequantize_per_tensor.default(
+                    x, 1.0, 0, -128, 127, torch.int8
+                )
+                q = torch.ops.quantized_decomposed.quantize_per_tensor.default(
+                    dq, 1.0, 0, -128, 127, torch.int8
+                )
+                return q
+
+        model = TestDqQ()
+        m_eager = model.eval()
+        ep = torch.export.export(m_eager, (torch.randn(9, 8),))
+        edge = to_edge(ep)
+        # Check that the dq and q nodes are not touched by the RemoveNoopPass.
+        self.assertTrue(
+            any(
+                "dequantize" in str(node.target)
+                for node in edge.exported_program().graph_module.graph.nodes
+            )
+        )
+        self.assertTrue(
+            any(
+                "quantize" in str(node.target)
+                for node in edge.exported_program().graph_module.graph.nodes
+            )
+        )
+
+    def test_dq_q_different_qparams(self) -> None:
+        class TestDqQDifferentQParam(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+
+            def forward(self, x):
+                dq = torch.ops.quantized_decomposed.dequantize_per_tensor.default(
+                    x, 1.0, 0, -128, 127, torch.int8
+                )
+                slice_copy_output = torch.ops.aten.slice_copy.Tensor(dq, 0, 0)
+                q = torch.ops.quantized_decomposed.quantize_per_tensor.default(
+                    slice_copy_output, 1.0, 0, -127, 127, torch.int8
+                )
+                return q
+
+        model = TestDqQDifferentQParam()
+        m_eager = model.eval()
+        ep = torch.export.export(m_eager, (torch.randn(9, 8),))
+        edge = to_edge(ep)
+        print(edge.exported_program().graph_module.graph)
+        # Check that the dq and q nodes are not touched by the RemoveNoopPass.
+        self.assertTrue(
+            any(
+                "dequantize" in str(node.target)
+                for node in edge.exported_program().graph_module.graph.nodes
+            )
+        )
+        self.assertTrue(
+            any(
+                "quantize" in str(node.target)
+                for node in edge.exported_program().graph_module.graph.nodes
+            )
+        )
+        self.assertFalse(
+            any(
+                "slice" in str(node.target)
+                for node in edge.exported_program().graph_module.graph.nodes
+            )
+        )
+
+    def test_normalize_view_copy_base_pass(self) -> None:
+
+        class ViewChain(torch.nn.Module):
+            def forward(self, x):
+                x = torch.ops.aten.view_copy.default(x, [30, 1])
+                x = torch.ops.aten.view_copy.default(x, [5, 6])
+                x = torch.ops.aten.view_copy.default(x, [2, 15])
+                x = torch.ops.aten.view_copy.default(x, [3, -1])
+                return x
+
+        def is_view_copy(node: torch.fx.Node) -> bool:
+            return (
+                node.op == "call_function"
+                and node.target == torch.ops.aten.view_copy.default
+            )
+
+        gm = export(ViewChain(), (torch.ones(30),)).graph_module
+
+        # Check before transformation
+        n_view_copy_before = 0
+        n_view_copy_bases_before = 0
+        for node in gm.graph.nodes:
+            if is_view_copy(node):
+                n_view_copy_before += 1
+                base = node.args[0]
+                if is_view_copy(base):
+                    n_view_copy_bases_before += 1
+
+        self.assertEqual(n_view_copy_before, 4)
+        self.assertEqual(n_view_copy_bases_before, 3)
+
+        # Do transformation
+        p = NormalizeViewCopyBasePass()
+        gm_res = p(gm)
+        assert gm_res is not None
+        gm = gm_res.graph_module
+
+        # Check after transformation
+        n_view_copy_after = 0
+        n_view_copy_bases_after = 0
+        for node in gm.graph.nodes:
+            if is_view_copy(node):
+                n_view_copy_after += 1
+                base = node.args[0]
+                if is_view_copy(base):
+                    n_view_copy_bases_after += 1
+
+        self.assertEqual(n_view_copy_after, 4)
+        self.assertEqual(n_view_copy_bases_after, 0)
+
+    def test_replace_view_copy_with_view_pass(self) -> None:  # noqa: C901
+
+        # Helper functions
+        def is_view_copy(node: torch.fx.Node) -> bool:
+            return (
+                node.op == "call_function"
+                and node.target == torch.ops.aten.view_copy.default
+            )
+
+        def is_memory_view(node: torch.fx.Node) -> bool:
+            return node.op == "call_function" and node.target == memory.view
+
+        # Test example set up
+        class TestViewCopies(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.parameter = torch.nn.Parameter(torch.ones(1))
+
+            def forward(self, x):
+                o1 = torch.ops.aten.view_copy.default(x, [1])
+                o2 = torch.ops.aten.view_copy.default(self.parameter, [1])
+                return o1, o2
+
+        ep = torch.export.export(
+            TestViewCopies(),
+            args=(torch.ones(1),),
+        )
+        for node in ep.graph.nodes:
+            if node.op == "placeholder":
+                node.meta["spec"] = TensorSpec.from_tensor(torch.empty(1))
+                node.meta["spec"].shape_dynamism = TensorShapeDynamism.STATIC
+
+        # Run tests
+        gm = ep.graph_module
+
+        # Check before transformation
+        FileCheck().check_count(
+            "torch.ops.aten.view_copy.default", 2, exactly=True
+        ).run(gm.code)
+        FileCheck().check_count("executorch_exir_memory_view", 0, exactly=True).run(
+            gm.code
+        )
+
+        # Do transformation
+        p = ReplaceViewCopyWithViewPass()
+        gm_res = p(gm)
+        assert gm_res is not None
+        gm = gm_res.graph_module
+
+        # Check before transformation
+        FileCheck().check_count(
+            "torch.ops.aten.view_copy.default", 0, exactly=True
+        ).run(gm.code)
+        FileCheck().check_count("executorch_exir_memory_view", 2, exactly=True).run(
+            gm.code
+        )

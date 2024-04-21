@@ -6,26 +6,41 @@
 
 import logging
 import operator
+import re
 from collections import defaultdict
+from dataclasses import asdict, dataclass
 from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 
+import pandas as pd
 import torch
+from executorch.exir.backend.backend_details import ExportedProgram
+from executorch.exir.backend.canonical_partitioners.duplicate_constant_node_pass import (
+    duplicate_constant_node,
+)
 from executorch.exir.common import setting_python_recursive_limit
 from executorch.exir.delegate import executorch_call_delegate
 from executorch.exir.dialects._ops import ops as exir_ops
 
 from executorch.exir.lowered_backend_module import create_submodule_from_nodes
+from torch._export.utils import is_buffer, is_lifted_tensor_constant, is_param
 from torch.fx.node import Node
 from torch.fx.passes.utils.source_matcher_utils import SourcePartition
 
 T_QuantPerTensor = exir_ops.edge.quantized_decomposed.quantize_per_tensor.default
 T_DQuantPerTensor = exir_ops.edge.quantized_decomposed.dequantize_per_tensor.default
 
+# Column names of the DataFrame returned by DelegationInfo.get_operator_delegation_dataframe()
+# which describes the summarized delegation information grouped by each operator type
+_OCCURRENCES_IN_DELEGATED_GRAPHS = "occurrences_in_delegated_graphs"
+_OCCURRENCES_IN_NON_DELEGATED_GRAPHS = "occurrences_in_non_delegated_graphs"
+
+
 log: logging.Logger = logging.getLogger(__name__)
 
 
-@lru_cache(maxsize=128)
+# NB: Set this to None to handle validation from MobileBert
+@lru_cache(maxsize=None)
 def is_same_node(
     node_left: Iterable[torch.fx.Node],
     node_right: Iterable[torch.fx.Node],
@@ -171,6 +186,74 @@ def replace_quantized_partition_with_op(
     return (replaced_op, dequant_nodes, quant_nodes)
 
 
+def _assign_new_tag(
+    tagged_exported_program: ExportedProgram,
+    copied_nodes: Set[str],
+):
+    """
+    Assign new tag to the copied nodes.
+
+    Before the pass
+    constant_0 (tag_10) ------------------> op_b (tag_10)
+    constant_0_copy (tag_10) -------------> op_a (tag_11)
+
+    After the pass
+    constant_0 (tag_10) ------------------> op_b (tag_10)
+    constant_0_copy (tag_11) -------------> op_a (tag_11)
+
+    """
+    for node in tagged_exported_program.graph.nodes:
+        if node.op == "placeholder":
+            if node.name in copied_nodes:
+                users_tag = set()
+                for user in node.users:
+                    users_tag.add(user.meta.get("delegation_tag", None))
+                # Assign the tag to the copy constant node the same as their users.
+                if len(users_tag) == 1:
+                    node.meta["delegation_tag"] = users_tag.pop()
+
+
+def _maybe_duplicate_constant_nodes(
+    tagged_exported_program: ExportedProgram,
+    tag: str,
+    owning_program: ExportedProgram,
+) -> None:
+    """
+    If the constants node is shared by different tagged nodes, like
+    constant_0 ----> op_b (tag_10)
+    |-------------> op_a (tag_11)
+
+    we make default as constant_0 is duplicated to constant_0_1, constant_0_2, unless the node is tagged with "no_copy"
+    constant_0 ------------------> op_b (tag_10)
+    constant_0_copy -------------> op_a (tag_11)
+
+    backend can estimate how much they want to duplicate the constant node, either error out or default to duplicate
+    """
+    candidate_nodes = set()
+    for node in tagged_exported_program.graph.nodes:
+        if node.meta.get("delegation_tag", "") == tag:
+            if node.op == "placeholder":
+                for user in node.users:
+                    users_tag = user.meta.get("delegation_tag", None)
+                    if users_tag != tag:
+                        # If the node is tagged with "no_copy", we stop duplicating it and throw an error
+                        if node.meta.get("no_copy", False):
+                            raise RuntimeError(
+                                f"constant data node ({node}) is tagged with ({tag}) but has user ({user}) which has tag ({users_tag})"
+                            )
+                        else:
+                            candidate_nodes.add(node.name)
+    copied_nodes = set()
+    for candidate_node in candidate_nodes:
+        # Both tagged exported program and the owning program need to go through the same duplication pass
+        copied_nodes = copied_nodes.union(
+            duplicate_constant_node(tagged_exported_program, candidate_node)
+        )
+        duplicate_constant_node(owning_program, candidate_node)
+    candidate_node_with_copies = candidate_nodes.union(copied_nodes)
+    _assign_new_tag(tagged_exported_program, candidate_node_with_copies)
+
+
 def _get_item_from_executorch_call_delegate(node: torch.fx.Node) -> bool:
     """
     Check if the node is the getitem followed by executorch_call_delegate node. These getitems node
@@ -208,6 +291,261 @@ def get_delegates(graph: torch.fx.Graph) -> List[torch.fx.Node]:
     ]
 
 
+@dataclass
+class DelegationBreakdown:
+    """
+    DelegationBreakdown contains the number of delegated and non-delegated nodes
+    of the operator type op_type.
+
+    Args:
+        delegated: The number of delegated nodes.
+        non_delegated: The number of non-delegated nodes.
+    """
+
+    op_type: str = ""
+    delegated: int = 0
+    non_delegated: int = 0
+
+
+@dataclass
+class DelegationInfo:
+    """
+    DelegationInfo contains information of a delegated graph module.
+
+    Args:
+        num_delegated_subgraphs: The number of delegated subgraphs.
+        num_delegated_nodes: The number of delegated nodes.
+        num_non_delegated_nodes: The number of non-delegated nodes.
+        delegation_by_operator: A dictionary of operator type to DelegationBreakdown.
+    """
+
+    num_delegated_subgraphs: int
+    num_delegated_nodes: int
+    num_non_delegated_nodes: int
+    delegation_by_operator: Dict[str, DelegationBreakdown]
+
+    def get_summary(self) -> str:
+        """
+        Get a summary of the delegation information in string format.
+
+        Args:
+            None
+
+        Returns:
+            A string containing information of some class attributes for easy print-out.
+        """
+
+        # Assemble and return the summary string
+        summary_str = f"Total delegated subgraphs: {self.num_delegated_subgraphs}\n"
+        summary_str += f"Number of delegated nodes: {self.num_delegated_nodes}\n"
+        summary_str += (
+            f"Number of non-delegated nodes: {self.num_non_delegated_nodes}\n"
+        )
+        return summary_str
+
+    def get_operator_delegation_dataframe(self) -> pd.DataFrame:
+        """
+        Get the delegation information grouped by operator type in a pandas DataFrame.
+
+        Args:
+            None
+
+        Returns:
+            Returns a pandas DataFrame containing the following columns:
+            - op_type: The operator type, with the last row being "Total".
+            - occurrences_in_delegated_graphs: The number of occurrences of the op_type in delegated subgraphs.
+            - occurrences_in_non_delegated_graphs: The number of occurrences of the op_type not in delegated subgraphs.
+            With the last row being the total number of delegated and non-delegated occurrences of each op_type.
+        """
+
+        # Convert the dict to a dataframe
+        list_of_dicts = [
+            asdict(breakdown) for breakdown in self.delegation_by_operator.values()
+        ]
+        df = pd.DataFrame(list_of_dicts)
+        # Rename columns for better understandability
+        df = df.rename(
+            columns={
+                "delegated": _OCCURRENCES_IN_DELEGATED_GRAPHS,
+                "non_delegated": _OCCURRENCES_IN_NON_DELEGATED_GRAPHS,
+            }
+        )
+        df = df.sort_values(by="op_type", ignore_index=True)
+
+        # Add a Total row at the bottom
+        total_delegated_nodes = df[_OCCURRENCES_IN_DELEGATED_GRAPHS].sum()
+        total_non_delegated_nodes = df[_OCCURRENCES_IN_NON_DELEGATED_GRAPHS].sum()
+        df.loc[len(df)] = ["Total", total_delegated_nodes, total_non_delegated_nodes]
+
+        return df
+
+
+def get_delegation_info(
+    graph_module: torch.fx.GraphModule,
+) -> DelegationInfo:
+    """
+    Util function to get the delegation information of the given graph module.
+
+    Args:
+        graph_module: The lowered graph module to get the delegation information from.
+
+    Returns:
+        Return a DelegationInfo object containing the delegation information.
+    """
+
+    def _get_op_type(node_name: str) -> str:
+        # node_name is in format <op_type> or <op_type>_x in which x is an integer suffix.
+        return re.sub(r"_[\d]+$", "", node_name)
+
+    op_occurrences_dict = defaultdict(lambda: DelegationBreakdown())
+
+    def _insert_op_occurrences_dict(node_name: str, delegated: bool) -> None:
+        op_type = _get_op_type(node_name)
+        op_occurrences_dict[op_type].op_type = op_type
+        if delegated:
+            op_occurrences_dict[op_type].delegated += 1
+        else:
+            op_occurrences_dict[op_type].non_delegated += 1
+
+    delegated_subgraph_counter = 0
+
+    lowered_module_dict = {
+        node.name: getattr(graph_module, node.name)
+        for node in graph_module.graph.nodes
+        if node.op == "get_attr" and node.name.startswith("lowered_module_")
+    }
+
+    for node in graph_module.graph.nodes:
+        if (
+            node.op == "call_function"
+            and _get_op_type(node.name) != "executorch_call_delegate"
+        ):
+            # Non-delegated node
+            _insert_op_occurrences_dict(node_name=node.name, delegated=False)
+        # Check if the node is a lowered module
+        if node.op == "get_attr" and node.name.startswith("lowered_module_"):
+            lowered_module = lowered_module_dict[node.name]
+            delegated_subgraph_counter += 1
+            for node_in_lowered_module in lowered_module.original_module.graph.nodes:
+                if node_in_lowered_module.op == "call_function":
+                    # Delegated node
+                    _insert_op_occurrences_dict(
+                        node_name=node_in_lowered_module.name, delegated=True
+                    )
+
+    # Calculate the total number of delegated and non-delegated nodes
+    num_delegated_nodes = 0
+    num_non_delegated_nodes = 0
+    for value in op_occurrences_dict.values():
+        num_delegated_nodes += value.delegated
+        num_non_delegated_nodes += value.non_delegated
+
+    return DelegationInfo(
+        num_delegated_nodes=num_delegated_nodes,
+        num_non_delegated_nodes=num_non_delegated_nodes,
+        num_delegated_subgraphs=delegated_subgraph_counter,
+        delegation_by_operator=op_occurrences_dict,
+    )
+
+
+def print_delegated_graph(graph_module: torch.fx.GraphModule) -> str:
+    """
+    Print the graph of including lowered_module (both backend id and original graph) together with the graph module. Example output:
+    graph():
+        %arg0_1 : [num_users=2] = placeholder[target=arg0_1]
+        %arg1_1 : [num_users=2] = placeholder[target=arg1_1]
+        %arg2_1 : [num_users=2] = placeholder[target=arg2_1]
+        %lowered_module_0 : [num_users=1] = get_attr[target=lowered_module_0]
+            backend_id: BackendWithCompilerDemo
+            lowered graph():
+                %arg0_1 : [num_users=1] = placeholder[target=arg0_1]
+                %arg1_1 : [num_users=1] = placeholder[target=arg1_1]
+                %arg2_1 : [num_users=1] = placeholder[target=arg2_1]
+                %aten_mm_default : [num_users=1] = call_function[target=executorch.exir.dialects.edge._ops.aten.mm.default](args = (%arg0_1, %arg1_1), kwargs = {})
+                %aten_add_tensor : [num_users=1] = call_function[target=executorch.exir.dialects.edge._ops.aten.add.Tensor](args = (%aten_mm_default, %arg2_1), kwargs = {})
+                return [aten_add_tensor]
+        %executorch_call_delegate : [num_users=1] = call_function[target=torch.ops.higher_order.executorch_call_delegate](args = (%lowered_module_0, %arg0_1, %arg1_1, %arg2_1), kwargs = {})
+        %getitem : [num_users=1] = call_function[target=operator.getitem](args = (%executorch_call_delegate, 0), kwargs = {})
+        %aten_sub_tensor : [num_users=1] = call_function[target=executorch.exir.dialects.edge._ops.aten.sub.Tensor](args = (%getitem, %arg0_1), kwargs = {})
+        %lowered_module_1 : [num_users=1] = get_attr[target=lowered_module_1]
+            backend_id: BackendWithCompilerDemo
+            lowered graph():
+                %aten_sub_tensor : [num_users=1] = placeholder[target=aten_sub_tensor]
+                %arg1_1 : [num_users=1] = placeholder[target=arg1_1]
+                %arg2_1 : [num_users=1] = placeholder[target=arg2_1]
+                %aten_mm_default_1 : [num_users=1] = call_function[target=executorch.exir.dialects.edge._ops.aten.mm.default](args = (%aten_sub_tensor, %arg1_1), kwargs = {})
+                %aten_add_tensor_1 : [num_users=1] = call_function[target=executorch.exir.dialects.edge._ops.aten.add.Tensor](args = (%aten_mm_default_1, %arg2_1), kwargs = {})
+                return [aten_add_tensor_1]
+        %executorch_call_delegate_1 : [num_users=1] = call_function[target=torch.ops.higher_order.executorch_call_delegate](args = (%lowered_module_1, %aten_sub_tensor, %arg1_1, %arg2_1), kwargs = {})
+        %getitem_1 : [num_users=1] = call_function[target=operator.getitem](args = (%executorch_call_delegate_1, 0), kwargs = {})
+        return [getitem_1]
+    """
+    lowered_module_dict = {
+        node.name: getattr(graph_module, node.name)
+        for node in graph_module.graph.nodes
+        if node.op == "get_attr" and node.name.startswith("lowered_module_")
+    }
+    indent = "  "
+    graph_format_str = "graph():\n"
+    for node in graph_module.graph.nodes:
+        graph_format_str += f"{indent}{node.format_node()}\n"
+        if node.op == "get_attr" and node.name.startswith("lowered_module_"):
+            lowered_module = lowered_module_dict[node.name]
+            graph_format_str += f"{indent * 2}backend_id: {lowered_module.backend_id}\n"
+            graph_format_str += f"{indent * 2}lowered graph():\n"
+            for node_in_lowered_module in lowered_module.original_module.graph.nodes:
+                graph_format_str += (
+                    f"{indent * 3}{node_in_lowered_module.format_node()}\n"
+                )
+    return graph_format_str
+
+
+def tag_constant_data(edge_program: ExportedProgram) -> None:
+    """
+    Util function for partitioners. This function tags the const/param/buffers nodes
+    whose users all belong within the same partition. This should be called after tagging all other nodes.
+    Any const/param/buffer which is used as input to a subgraph, will be tagged with the same tag as that
+    subgraph. Throw error when const/param/buffers is used across different partitions. That is the
+    underlying data will be owned by multiple delegates.
+    """
+    mutated_buffer = set()
+    for node in edge_program.graph.nodes:
+        if node.op == "placeholder" and (
+            is_param(edge_program, node)
+            or is_buffer(edge_program, node)
+            or is_lifted_tensor_constant(edge_program, node)
+        ):
+            for node_user in node.users:
+                if node_user.name in edge_program.graph_signature.buffers_to_mutate:
+                    logging.info(
+                        "The buffer node is a mutated buffer node, which is not constant."
+                    )
+                    mutated_buffer.add(node)
+
+    for node in edge_program.graph.nodes:
+        # go through const/param/buffer nodes, if all users of const/param/buffer nodes are partitioned then partition
+        if node.op == "placeholder" and (
+            is_param(edge_program, node)
+            or is_buffer(edge_program, node)
+            or is_lifted_tensor_constant(edge_program, node)
+        ):
+            if node not in mutated_buffer:
+                user_tags = set()
+                for user in node.users:
+                    user_tag = user.meta.get("delegation_tag", None)
+                    if user_tag is not None:
+                        user_tags.add(user_tag)
+                if len(user_tags) > 1:
+                    logging.info(
+                        f"The data node is used across multiple partitions, including {user_tags}. "
+                        "If the data is too large and it's not preferred to copy, please tag the "
+                        "constant node like node.['no_copy'] = True and they won't be copied."
+                    )
+                # tag the data node with the same tag as the last user
+                if len(user_tags) > 0:
+                    node.meta["delegation_tag"] = user_tags.pop()
+
+
 # TODO - style: use templated types
 class DelegateMappingBuilder:
     """
@@ -225,9 +563,9 @@ class DelegateMappingBuilder:
 
         # Note that the internal struct has a Set value, while the getter
         # function returns the values as a tuple
-        self._debug_handle_map: Union[
-            Dict[int, Set[int]], Dict[str, Set[int]]
-        ] = defaultdict(set)
+        self._debug_handle_map: Union[Dict[int, Set[int]], Dict[str, Set[int]]] = (
+            defaultdict(set)
+        )
         self._next_index: int = 0
 
     def get_delegate_mapping(
@@ -246,7 +584,7 @@ class DelegateMappingBuilder:
     def insert_delegate_mapping_entry(
         self,
         nodes: Optional[Union[Node, List[Node]]] = None,
-        handles: Optional[Union[int, List[int]]] = None,
+        handles: Optional[Union[int, List[Optional[int]]]] = None,
         identifier: Optional[Union[int, str]] = None,
     ) -> Union[int, str]:
         """
@@ -261,11 +599,12 @@ class DelegateMappingBuilder:
 
         Args:
             nodes (Union[Node, List[Node]]): A (list of) Node(s)
-            handles (Union[int, List[int]]): A (list of) debug handle(s)
+            handles (Union[int, List[Optional[int]]]): A (list of) debug handle(s)
             identifier (Optional[Union[int, str]]):
                 Debug identifier corresponding to the Node(s)
 
         Note: Exactly one of nodes and handles must be provided
+        Note: If a debug handle is missing or None, it is skipped
 
         Returns:
             Union[int, str]:
@@ -299,19 +638,24 @@ class DelegateMappingBuilder:
                     "No identifier provided. Failed to add or update entry."
                 )
 
+        # Collect debug handles
         if nodes is not None:
-            # Get all debug handles found in the nodes
-            # Note that missing debug handles are not surfaced
             new_debug_handles = {
-                handle
+                node.meta.get("debug_handle")
                 for node in (nodes if isinstance(nodes, List) else [nodes])
-                if (handle := node.meta.get("debug_handle")) is not None
             }
         else:
             new_debug_handles = (
-                set(handles) if isinstance(handles, (tuple, List)) else {handles}
+                handles if isinstance(handles, (tuple, List)) else [handles]
             )
 
+        # Filter for empty debug handles
+        filtered_debug_handles = {
+            handle for handle in new_debug_handles if handle is not None
+        }
+        if len(filtered_debug_handles) == 0:
+            raise Exception("No valid debug handles found. Failed to add entry.")
+
         # pyre-ignore Warning from Union[int, st] keys
-        self._debug_handle_map[identifier].update(new_debug_handles)
+        self._debug_handle_map[identifier] = filtered_debug_handles
         return identifier

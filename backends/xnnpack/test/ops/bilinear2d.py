@@ -73,7 +73,6 @@ class TestUpsampleBilinear2d(unittest.TestCase):
         "executorch_exir_dialects_edge__ops_aten__to_copy_default",
         "executorch_exir_dialects_edge__ops_aten_add_Tensor",
         "executorch_exir_dialects_edge__ops_aten_clamp_default",
-        "executorch_exir_dialects_edge__ops_aten_unsqueeze_copy_default",
     }
 
     def test_fp32_static_resize_bilinear2d(self):
@@ -88,8 +87,7 @@ class TestUpsampleBilinear2d(unittest.TestCase):
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     def test_fp32_static_resize_bilinear2d_with_align_cornesr(self):
@@ -104,8 +102,7 @@ class TestUpsampleBilinear2d(unittest.TestCase):
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     def test_fp32_static_resize_bilinear2d_antialiased(self):

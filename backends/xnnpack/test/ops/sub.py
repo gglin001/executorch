@@ -27,8 +27,7 @@ class TestSub(unittest.TestCase):
             z = x - x
             return z
 
-    def test_fp32_sub(self):
-        inputs = (torch.randn((1, 3)), torch.randn((4, 3)))
+    def _test_sub(self, inputs):
         (
             Tester(self.Sub(), inputs)
             .export()
@@ -40,9 +39,19 @@ class TestSub(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_sub_Tensor"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
+
+    def test_fp16_sub(self):
+        inputs = (
+            torch.randn((1, 3)).to(torch.float16),
+            torch.randn((4, 3)).to(torch.float16),
+        )
+        self._test_sub(inputs)
+
+    def test_fp32_sub(self):
+        inputs = (torch.randn((1, 3)), torch.randn((4, 3)))
+        self._test_sub(inputs)
 
     @unittest.skip("T171957656 - Quantized sub not implemented.")
     def test_qs8_sub(self):
@@ -65,8 +74,7 @@ class TestSub(unittest.TestCase):
             )
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     @unittest.skip("T171957656 - Quantized sub not implemented.")
@@ -90,8 +98,7 @@ class TestSub(unittest.TestCase):
             )
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     @unittest.skip("T171957656 - Quantized sub not implemented.")
@@ -115,8 +122,7 @@ class TestSub(unittest.TestCase):
             )
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     @unittest.skip("T171957656 - Quantized sub not implemented.")
@@ -156,6 +162,5 @@ class TestSub(unittest.TestCase):
             )
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )

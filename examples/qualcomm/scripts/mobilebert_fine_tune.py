@@ -4,17 +4,20 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import json
 import os
+import sys
 from multiprocessing.connection import Client
 
 import numpy as np
 
 import torch
+from executorch.backends.qualcomm.quantizer.quantizer import QuantDtype
 from executorch.examples.qualcomm.scripts.utils import (
     build_executorch_binary,
     make_output_dir,
+    parse_skip_delegation_node,
+    setup_common_args_and_variables,
     SimpleADB,
 )
 from transformers import BertTokenizer, MobileBertForSequenceClassification
@@ -24,9 +27,9 @@ def evaluate(model, data_val):
     predictions, true_vals = [], []
     for data in data_val:
         inputs = {
-            "input_ids": data[0],
-            "attention_mask": data[1],
-            "labels": data[2],
+            "input_ids": data[0].to(torch.long),
+            "attention_mask": data[1].to(torch.long),
+            "labels": data[2].to(torch.long),
         }
         logits = model(**inputs)[1].detach().numpy()
         label_ids = inputs["labels"].numpy()
@@ -56,8 +59,18 @@ def accuracy_per_class(preds, goldens, labels):
 def get_dataset(data_val):
     # prepare input data
     inputs, input_list = [], ""
+    # max_position_embeddings defaults to 512
+    position_ids = torch.arange(512).expand((1, -1)).to(torch.int32)
     for index, data in enumerate(data_val):
-        inputs.append(tuple(data[:2]))
+        data = [d.to(torch.int32) for d in data]
+        # input_ids, attention_mask, token_type_ids, position_ids
+        inputs.append(
+            (
+                *data[:2],
+                torch.zeros(data[0].size(), dtype=torch.int32),
+                position_ids[:, : data[0].shape[1]],
+            )
+        )
         input_text = " ".join(
             [f"input_{index}_{i}.raw" for i in range(len(inputs[-1]))]
         )
@@ -66,7 +79,7 @@ def get_dataset(data_val):
     return inputs, input_list
 
 
-def get_fine_tuned_mobilebert(artifacts_dir, pretrained_weight):
+def get_fine_tuned_mobilebert(artifacts_dir, pretrained_weight, batch_size):
     from io import BytesIO
 
     import pandas as pd
@@ -148,7 +161,7 @@ def get_fine_tuned_mobilebert(artifacts_dir, pretrained_weight):
     dataset_train = TensorDataset(input_ids_train, attention_masks_train, labels_train)
     dataset_val = TensorDataset(input_ids_val, attention_masks_val, labels_val)
 
-    batch_size, epochs = 3, 5
+    epochs = 5
     dataloader_train = DataLoader(
         dataset_train,
         sampler=RandomSampler(dataset_train),
@@ -201,11 +214,12 @@ def get_fine_tuned_mobilebert(artifacts_dir, pretrained_weight):
         ),
     )
 
-    return model.eval(), dataloader_val, batch_size, labels
+    return model.eval(), dataloader_val, labels
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = setup_common_args_and_variables()
+
     parser.add_argument(
         "-a",
         "--artifact",
@@ -213,87 +227,78 @@ if __name__ == "__main__":
         default="./mobilebert_fine_tune",
         type=str,
     )
-    parser.add_argument(
-        "-b",
-        "--build_folder",
-        help="path to cmake binary directory for android, e.g., /path/to/build_android",
-        type=str,
-        required=True,
-    )
-    parser.add_argument(
-        "-s",
-        "--device",
-        help="serial number for android device communicated via ADB.",
-        type=str,
-        required=True,
-    )
-    parser.add_argument(
-        "-H",
-        "--host",
-        help="hostname where android device is connected.",
-        default=None,
-        type=str,
-    )
-    parser.add_argument(
-        "-m",
-        "--model",
-        help="SoC model of current device. e.g. 'SM8550' for Snapdragon 8 Gen 2.",
-        type=str,
-        required=True,
-    )
+
     parser.add_argument(
         "-p",
         "--pretrained_weight",
         help="Location of pretrained weight",
-        default="",
+        default=None,
         type=str,
     )
+
     parser.add_argument(
-        "--ip",
-        help="IPC address for delivering execution result",
-        default="",
-        type=str,
-    )
-    parser.add_argument(
-        "--port",
-        help="IPC port for delivering execution result",
-        default=-1,
-        type=int,
+        "-F",
+        "--use_fp16",
+        help="If specified, will run in fp16 precision and discard ptq setting",
+        action="store_true",
+        default=False,
     )
 
-    # QNN_SDK_ROOT might also be an argument, but it is used in various places.
-    # So maybe it's fine to just use the environment.
-    if "QNN_SDK_ROOT" not in os.environ:
-        raise RuntimeError("Environment variable QNN_SDK_ROOT must be set")
-    print(f"QNN_SDK_ROOT={os.getenv('QNN_SDK_ROOT')}")
-
-    if "LD_LIBRARY_PATH" not in os.environ:
-        print(
-            "[Warning] LD_LIBRARY_PATH is not set. If errors like libQnnHtp.so "
-            "not found happen, please follow setup.md to set environment."
-        )
-    else:
-        print(f"LD_LIBRARY_PATH={os.getenv('LD_LIBRARY_PATH')}")
+    parser.add_argument(
+        "-P",
+        "--ptq",
+        help="If specified, will do PTQ quantization. default is 8bits activation and 8bits weight. Support 8a8w, 16a16w and 16a4w.",
+        default="8a8w",
+    )
 
     args = parser.parse_args()
+
+    skip_node_id_set, skip_node_op_set = parse_skip_delegation_node(args)
 
     # ensure the working directory exist.
     os.makedirs(args.artifact, exist_ok=True)
 
-    pte_filename = "mb_qnn"
-    model, data_val, batch_size, labels = get_fine_tuned_mobilebert(
-        args.artifact, args.pretrained_weight
+    if not args.compile_only and args.device is None:
+        raise RuntimeError(
+            "device serial is required if not compile only. "
+            "Please specify a device serial by -s/--device argument."
+        )
+
+    pte_filename = "ptq_mb_qnn" if args.ptq else "mb_qnn"
+    batch_size = 1 if args.ptq else 3
+    model, data_val, labels = get_fine_tuned_mobilebert(
+        args.artifact, args.pretrained_weight, batch_size
     )
     inputs, input_list = get_dataset(data_val)
+
+    if args.ptq == "8a8w":
+        quant_dtype = QuantDtype.use_8a8w
+    elif args.ptq == "16a16w":
+        quant_dtype = QuantDtype.use_16a16w
+    elif args.ptq == "16a4w":
+        quant_dtype = QuantDtype.use_16a4w
+    else:
+        raise AssertionError(
+            f"No support for quant type {args.ptq}. Support 8a8w, 16a16w and 16a4w."
+        )
+
+    if args.use_fp16:
+        quant_dtype = None
 
     build_executorch_binary(
         model,
         inputs[0],
         args.model,
         f"{args.artifact}/{pte_filename}",
-        None,
-        use_fp16=True,
+        inputs,
+        skip_node_id_set=skip_node_id_set,
+        skip_node_op_set=skip_node_op_set,
+        quant_dtype=quant_dtype,
+        shared_buffer=args.shared_buffer,
     )
+
+    if args.compile_only:
+        sys.exit(0)
 
     # setup required paths accordingly
     # qnn_sdk       : QNN SDK path setup in environment variable
@@ -309,6 +314,7 @@ if __name__ == "__main__":
         device_id=args.device,
         host_id=args.host,
         soc_model=args.model,
+        shared_buffer=args.shared_buffer,
     )
     adb.push(inputs=inputs, input_list=input_list)
     adb.execute()

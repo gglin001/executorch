@@ -301,8 +301,20 @@ class XNNELU:
     flags: int
 
 
+@dataclass
 class XNNPReLU(XNNNode2x1):
     pass
+
+
+@dataclass
+class XNNScaledDotProductAttention:
+    query_id: int
+    key_id: int
+    value_id: int
+    scale_id: int
+    mask_id: int
+    output_id: int
+    flags: int
 
 
 XNodeUnion = Union[
@@ -341,6 +353,7 @@ XNodeUnion = Union[
     XNNConcatenate3,
     XNNConcatenate4,
     XNNStaticSlice,
+    XNNScaledDotProductAttention,
 ]
 
 
@@ -366,6 +379,9 @@ class XNNDatatype(IntEnum):
     xnn_datatype_qint32 = 5
     xnn_datatype_qcint8 = 6
     xnn_datatype_qcint32 = 7
+    xnn_datatype_qcint4 = 8
+    xnn_datatype_qdint8 = 9
+    xnn_datatype_qbint4 = 10
 
 
 @dataclass
@@ -375,12 +391,26 @@ class PerChannelQuant:
 
 
 @dataclass
+class PerChannelGroupQuant:
+    scale: List[float]
+    channel_dim: int
+    group_size: int = 1
+
+
+@dataclass
+class PerTokenDynamicQuant:
+    num_nonbatch_dims: int
+
+
+@dataclass
 class PerTensorQuant:
     scale: float
     zero_point: int
 
 
-XNNQuantParams = Union[PerChannelQuant, PerTensorQuant]
+XNNQuantParams = Union[
+    PerChannelQuant, PerTensorQuant, PerTokenDynamicQuant, PerChannelGroupQuant
+]
 
 
 @dataclass
@@ -392,7 +422,6 @@ class XNNTensorValue:
     external_id: int
     flags: int
     id_out: int
-    dq_datatype: XNNDatatype = XNNDatatype.xnn_datatype_invalid
 
 
 @dataclass
@@ -413,8 +442,9 @@ class XValue:
 
 
 @dataclass
-class Buffer:
-    storage: bytes
+class ConstantDataOffset:
+    offset: int
+    size: int
 
 
 @dataclass
@@ -427,5 +457,4 @@ class XNNGraph:
     input_ids: List[int]
     output_ids: List[int]
 
-    constant_buffer: List[Buffer]
-    mem_buffer_sizes: List[int]
+    constant_data: List[ConstantDataOffset]

@@ -20,9 +20,7 @@ class TestPow(unittest.TestCase):
             z = torch.pow(x, self.exp)
             return z
 
-    def test_fp32_pow2(self):
-        inputs = (torch.randn(20),)
-        pass
+    def _test_pow2(self, inputs):
         (
             Tester(self.Pow(2), inputs)
             .export()
@@ -36,9 +34,16 @@ class TestPow(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_pow_Tensor_Scalar"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
+
+    def test_fp16_pow2(self):
+        inputs = (torch.randn(20).to(torch.float16),)
+        self._test_pow2(inputs)
+
+    def test_fp32_pow2(self):
+        inputs = (torch.randn(20),)
+        self._test_pow2(inputs)
 
     def test_fp32_pow_unsupported(self):
         """

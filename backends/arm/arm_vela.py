@@ -1,9 +1,17 @@
+# Copyright 2023-2024 Arm Limited and/or its affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 import os
 import struct
 import subprocess
 import tempfile
 
+from typing import List
+
 import numpy as np
+
 
 # Pack either input or output tensor block, compose the related arrays into
 # per-io structs to simplify runtime use.
@@ -26,7 +34,7 @@ def vela_bin_pack_io(prefix, data):
 # Output via Vela to binary stream for ArmBackendEthosU
 # WARNING: Do not change this without changing VelaBinStream.cpp as that
 #          function consumes this format and the two need to align.
-def vela_compile(tosa_graph):
+def vela_compile(tosa_graph, args: List[str]):
     with tempfile.TemporaryDirectory() as tmpdir:
         tosaname = "out.tosa"
         flatbuffer = tosa_graph.serialize()
@@ -34,9 +42,7 @@ def vela_compile(tosa_graph):
             f.write(flatbuffer)
 
         # invoke vela
-        vela_command = (
-            f"cd {tmpdir}; vela --accelerator-config ethos-u55-128 {tosaname}"
-        )
+        vela_command = f"cd {tmpdir}; vela {' '.join(args)} {tosaname}"
         subprocess.run([vela_command], shell=True, check=True)
 
         np_path = os.path.join(tmpdir, "output", "out_sg0_vela.npz")

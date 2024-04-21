@@ -20,6 +20,10 @@ using Tensor = exec_aten::Tensor;
 Tensor& sigmoid_out(RuntimeContext& ctx, const Tensor& in, Tensor& out) {
   (void)ctx;
 
+  ET_KERNEL_CHECK(
+      ctx, in.scalar_type() != ScalarType::Bool, InvalidArgument, out);
+  ET_KERNEL_CHECK(ctx, tensor_is_floating_type(out), InvalidArgument, out);
+
   // Resize for dynamic shape
   ET_KERNEL_CHECK_MSG(
       ctx,
@@ -30,8 +34,8 @@ Tensor& sigmoid_out(RuntimeContext& ctx, const Tensor& in, Tensor& out) {
 
   ScalarType in_type = in.scalar_type();
   ScalarType out_type = out.scalar_type();
-  ET_SWITCH_REAL_TYPES_AND(Bool, in_type, ctx, "sigmoid.out", CTYPE_IN, [&]() {
-    ET_SWITCH_FLOAT_TYPES(out_type, ctx, "sigmoid.out", CTYPE_OUT, [&]() {
+  ET_SWITCH_REALHB_TYPES(in_type, ctx, "sigmoid.out", CTYPE_IN, [&]() {
+    ET_SWITCH_FLOATH_TYPES(out_type, ctx, "sigmoid.out", CTYPE_OUT, [&]() {
       apply_unary_map_fn(
           [](const CTYPE_IN val_in) {
             // perform math in double to preserve precision

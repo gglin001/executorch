@@ -27,6 +27,7 @@ def define_common_targets():
         ],
         exported_headers = ["repeat_util.h"],
         deps = [
+            "//executorch/runtime/kernel:kernel_includes",
             "//executorch/runtime/core/exec_aten/util:scalar_type_util",
             "//executorch/runtime/core/exec_aten/util:tensor_util",
         ],
@@ -78,6 +79,19 @@ def define_common_targets():
     )
 
     runtime.cxx_library(
+        name = "distance_util",
+        srcs = ["distance_util.cpp"],
+        exported_headers = [
+            "distance_util.h",
+        ],
+        compiler_flags = ["-Wno-missing-prototypes"],
+        deps = [
+            "//executorch/runtime/kernel:kernel_includes",
+        ],
+        visibility = ["//executorch/kernels/portable/cpu/...", "//executorch/kernels/optimized/cpu/..."],
+    )
+
+    runtime.cxx_library(
         name = "kernel_ops_util",
         srcs = ["kernel_ops_util.cpp"],
         exported_headers = [
@@ -101,6 +115,19 @@ def define_common_targets():
             ":broadcast_util",
             "//executorch/runtime/kernel:kernel_includes",
             "//executorch/kernels/portable/cpu:scalar_utils",
+        ],
+        visibility = ["//executorch/kernels/portable/cpu/...", "//executorch/kernels/optimized/cpu/..."],
+    )
+
+    runtime.cxx_library(
+        name = "padding_util",
+        srcs = ["padding_util.cpp"],
+        exported_headers = [
+            "padding_util.h",
+        ],
+        compiler_flags = ["-Wno-missing-prototypes"],
+        deps = [
+            "//executorch/runtime/kernel:kernel_includes",
         ],
         visibility = ["//executorch/kernels/portable/cpu/...", "//executorch/kernels/optimized/cpu/..."],
     )
@@ -155,6 +182,25 @@ def define_common_targets():
             ":broadcast_util",
         ],
         visibility = ["//executorch/kernels/portable/cpu/...", "//executorch/kernels/quantized/..."],
+    )
+
+    runtime.cxx_library(
+        name = "math_util",
+        srcs = [],
+        exported_headers = ["math_util.h"],
+        visibility = ["//executorch/kernels/portable/cpu/...", "//executorch/kernels/quantized/..."],
+    )
+
+    runtime.cxx_library(
+        name = "select_copy_util",
+        srcs = ["select_copy_util.cpp"],
+        exported_headers = ["select_copy_util.h"],
+        deps = [
+            ":copy_ops_util",
+            "//executorch/runtime/kernel:kernel_includes",
+            "//executorch/runtime/core/exec_aten/util:tensor_util",
+        ],
+        visibility = ["//executorch/kernels/portable/cpu/..."],
     )
 
     # Utility functions that can be used by operators that perform reduction

@@ -28,8 +28,7 @@ class TestAvgPool2d(unittest.TestCase):
         def forward(self, x):
             return self.avgPool(x)
 
-    def test_fp32_avgpool2d(self):
-        inputs = (torch.randn(1, 1, 10, 10),)
+    def _test_argpool2d(self, inputs):
         (
             Tester(self.AvgPool2d(), inputs)
             .export()
@@ -43,9 +42,16 @@ class TestAvgPool2d(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_avg_pool2d_default"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
+
+    def test_fp16_avgpool2d(self):
+        inputs = (torch.randn(1, 1, 10, 10).to(torch.float16),)
+        self._test_argpool2d(inputs)
+
+    def test_fp32_avgpool2d(self):
+        inputs = (torch.randn(1, 1, 10, 10),)
+        self._test_argpool2d(inputs)
 
     def test_fp32_avgpool2d_ceil_mode_unsupported(self):
         """

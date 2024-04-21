@@ -45,7 +45,7 @@ executorch_flatbuffer_ScalarType_enum_t get_flatbuffer_scalar_type(
       ET_CHECK_MSG(
           0,
           "This ScalarType = %hhd is not yet supported in ETDump",
-          tensor_scalar_type);
+          static_cast<char>(tensor_scalar_type));
   }
 }
 
@@ -103,7 +103,8 @@ ETDumpGen::ETDumpGen(Span<uint8_t> buffer) {
     alloc.set_buffer(
         (uint8_t*)buffer_with_builder,
         buffer_size,
-        (size_t)((buffer_size / 4 > max_alloc_buf_size) ? max_alloc_buf_size : buffer_size / 4));
+        (size_t)((buffer_size / 4 > max_alloc_buf_size) ? max_alloc_buf_size
+                                                        : buffer_size / 4));
     et_flatcc_custom_init(builder, &alloc);
   } else {
     builder = (struct flatcc_builder*)malloc(sizeof(struct flatcc_builder));
@@ -475,7 +476,7 @@ void ETDumpGen::log_evalue(const EValue& evalue, LoggedEValueType evalue_type) {
       ET_CHECK_MSG(
           0,
           "This EValue type = %d is not yet supported for logging\n",
-          evalue.tag);
+          static_cast<int>(evalue.tag));
       break;
   }
 

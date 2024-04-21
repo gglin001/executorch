@@ -16,7 +16,7 @@ from .qnn_constants import OpPad, QNN_OP_PACKAGE_NAME_QTI_AISW
 
 @register_node_visitor
 class Pad(NodeVisitor):
-    target = "aten.constant_pad_nd.default"
+    target = ["aten.constant_pad_nd.default"]
 
     def __init__(self, *args) -> None:
         super().__init__(*args)
@@ -33,6 +33,7 @@ class Pad(NodeVisitor):
             input_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=True,
         )
         pad_input_tensors = [pad_inp_tensor_wrapper]
 
@@ -42,6 +43,7 @@ class Pad(NodeVisitor):
             output_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=False,
         )
         pad_output_tensors = [output_tensor_wrapper]
 

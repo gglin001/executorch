@@ -16,7 +16,7 @@ def define_common_targets():
             "//executorch/runtime/executor:program",
             "//executorch/extension/data_loader:file_data_loader",
             "//executorch/extension/evalue_util:print_evalue",
-            "//executorch/util:util",
+            "//executorch/extension/runner_util:inputs",
         ],
         external_deps = [
             "gflags",
@@ -47,7 +47,7 @@ def define_common_targets():
         deps = [
             ":executor_runner_lib",
             "//executorch/runtime/executor/test:test_backend_compiler_lib",
-            "//executorch/kernels/portable:generated_lib_all_ops",
+            "//executorch/kernels/portable:generated_lib",
         ] + custom_ops_lib,
         define_static_target = True,
         **get_oss_build_kwargs()

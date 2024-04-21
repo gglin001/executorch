@@ -234,6 +234,7 @@ class TestTorchDispatchFXTracer(unittest.TestCase):
                 exir.CaptureConfig(
                     enable_functionalization=False,
                     enable_dynamic_shape=True,
+                    _dynamo_config=ExirDynamoConfig(assume_static_by_default=True),
                 ),
                 # sym_size is not reg op
             )
@@ -356,7 +357,7 @@ class TestTorchDispatchFXTracer(unittest.TestCase):
             torch.tensor(2.1),
         )
         graph_outputs = ep(*test_inputs)
-        eager_outputs = new_model(*test_inputs)
+        eager_outputs = Module()(*test_inputs)
         self.assertEqual(len(graph_outputs), 2)
         self.assertEqual(len(eager_outputs), 2)
         self.assertTrue(torch.allclose(graph_outputs[0], eager_outputs[0]))

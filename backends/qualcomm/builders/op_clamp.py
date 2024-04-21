@@ -16,7 +16,7 @@ from .qnn_constants import OpReluMinMax, QNN_OP_PACKAGE_NAME_QTI_AISW
 
 @register_node_visitor
 class Clamp(NodeVisitor):
-    target = "aten.clamp.default"
+    target = ["aten.clamp.default"]
 
     def __init__(self, *args) -> None:
         super().__init__(*args)
@@ -33,6 +33,7 @@ class Clamp(NodeVisitor):
             input_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=True,
         )
 
         # default value of output_min and output_max
@@ -53,6 +54,7 @@ class Clamp(NodeVisitor):
             output_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=False,
         )
 
         clamp_op = PyQnnWrapper.PyQnnOpWrapper(

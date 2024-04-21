@@ -35,7 +35,7 @@ class OpGetItem(OpSkipOps):
     do nothing if node is getitem
     """
 
-    target = "getitem"
+    target = ["getitem"]
 
     def define_node(
         self,
@@ -46,5 +46,5 @@ class OpGetItem(OpSkipOps):
             raise AssertionError(
                 f"Invalid number of index for {node.name }: {len(node.args[1])}"
             )
-        nodes_to_wrappers[node] = nodes_to_wrappers.get(node.args[0])
+        nodes_to_wrappers[node.name] = nodes_to_wrappers.get(node.args[0].name)
         return

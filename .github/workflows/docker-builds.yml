@@ -7,7 +7,8 @@ on:
       - .ci/docker/**
       - .github/workflows/docker-builds.yml
       - requirements-lintrunner.txt
-      - examples/arm/**
+      - examples/arm/setup.sh
+      - examples/arm/ethos-u-setup/**
   push:
     branches:
       - main
@@ -16,7 +17,8 @@ on:
       - .ci/docker/**
       - .github/workflows/docker-builds.yml
       - requirements-lintrunner.txt
-      - examples/arm/**
+      - examples/arm/setup.sh
+      - examples/arm/ethos-u-setup/**
   schedule:
     - cron: 1 3 * * 3
 
@@ -32,9 +34,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - docker-image-name: executorch-ubuntu-22.04-gcc9
           - docker-image-name: executorch-ubuntu-22.04-clang12
           - docker-image-name: executorch-ubuntu-22.04-linter
           - docker-image-name: executorch-ubuntu-22.04-arm-sdk
+          - docker-image-name: executorch-ubuntu-22.04-clang12-android
     env:
       DOCKER_IMAGE: 308535385114.dkr.ecr.us-east-1.amazonaws.com/executorch/${{ matrix.docker-image-name }}
     steps:
@@ -63,6 +67,7 @@ jobs:
           docker-image-name: ${{ matrix.docker-image-name }}
           always-rebuild: true
           push: true
+          force-push: true
 
       - name: Teardown Linux
         uses: pytorch/test-infra/.github/actions/teardown-linux@main

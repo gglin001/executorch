@@ -49,7 +49,7 @@ Exporting to ExecuTorch Tutorial
 #
 # Both APIs take in a model (any callable or ``torch.nn.Module``), a tuple of
 # positional arguments, optionally a dictionary of keyword arguments (not shown
-# in the example), and a list of constraints (covered later).
+# in the example), and a list of dynamic shapes (covered later).
 
 import torch
 from torch._export import capture_pre_autograd_graph
@@ -116,49 +116,51 @@ print(aten_dialect)
 import traceback as tb
 
 
-def f(x, y):
-    return x + y
+class Basic(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return x + y
 
 
+f = Basic()
 example_args = (torch.randn(3, 3), torch.randn(3, 3))
 pre_autograd_aten_dialect = capture_pre_autograd_graph(f, example_args)
 aten_dialect: ExportedProgram = export(f, example_args)
 
 # Works correctly
-print(aten_dialect(torch.ones(3, 3), torch.ones(3, 3)))
+print(aten_dialect.module()(torch.ones(3, 3), torch.ones(3, 3)))
 
 # Errors
 try:
-    print(aten_dialect(torch.ones(3, 2), torch.ones(3, 2)))
+    print(aten_dialect.module()(torch.ones(3, 2), torch.ones(3, 2)))
 except Exception:
     tb.print_exc()
 
 ######################################################################
-# To express that some input shapes are dynamic, we can insert constraints to
-# the exporting flow. This is done through the ``dynamic_dim`` API:
+# To express that some input shapes are dynamic, we can insert dynamic
+#  shapes to the exporting flow. This is done through the ``Dim`` API:
 
-from torch.export import dynamic_dim
-
-
-def f(x, y):
-    return x + y
+from torch.export import Dim
 
 
+class Basic(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return x + y
+
+
+f = Basic()
 example_args = (torch.randn(3, 3), torch.randn(3, 3))
-constraints = [
-    # Input 0, dimension 1 is dynamic
-    dynamic_dim(example_args[0], 1),
-    # Input 0, dimension 1 must be greater than or equal to 1
-    1 <= dynamic_dim(example_args[0], 1),
-    # Input 0, dimension 1 must be less than or equal to 10
-    dynamic_dim(example_args[0], 1) <= 10,
-    # Input 1, dimension 1 is equal to input 0, dimension 1
-    dynamic_dim(example_args[1], 1) == dynamic_dim(example_args[0], 1),
-]
+dim1_x = Dim("dim1_x", min=1, max=10)
+dynamic_shapes = {"x": {1: dim1_x}, "y": {1: dim1_x}}
 pre_autograd_aten_dialect = capture_pre_autograd_graph(
-    f, example_args, constraints=constraints
+    f, example_args, dynamic_shapes=dynamic_shapes
 )
-aten_dialect: ExportedProgram = export(f, example_args, constraints=constraints)
+aten_dialect: ExportedProgram = export(f, example_args, dynamic_shapes=dynamic_shapes)
 print("ATen Dialect Graph")
 print(aten_dialect)
 
@@ -168,26 +170,23 @@ print(aten_dialect)
 # of values.
 #
 # Additionally, we can see in the **Range constraints** that value of ``s0`` has
-# the range [1, 10], which was specified by our constraints. We also see in the
-# **Equality constraints**, the tuple ``(InputDim(input_name='arg1_1', dim=1),
-# InputDim(input_name='arg0_1', dim=1))```, meaning that input 0's dimension 1
-# is equal to input 1's dimension 1, which was also specified by our constraints.
+# the range [1, 10], which was specified by our dynamic shapes.
 #
 # Now let's try running the model with different shapes:
 
 # Works correctly
-print(aten_dialect(torch.ones(3, 3), torch.ones(3, 3)))
-print(aten_dialect(torch.ones(3, 2), torch.ones(3, 2)))
+print(aten_dialect.module()(torch.ones(3, 3), torch.ones(3, 3)))
+print(aten_dialect.module()(torch.ones(3, 2), torch.ones(3, 2)))
 
 # Errors because it violates our constraint that input 0, dim 1 <= 10
 try:
-    print(aten_dialect(torch.ones(3, 15), torch.ones(3, 15)))
+    print(aten_dialect.module()(torch.ones(3, 15), torch.ones(3, 15)))
 except Exception:
     tb.print_exc()
 
 # Errors because it violates our constraint that input 0, dim 1 == input 1, dim 1
 try:
-    print(aten_dialect(torch.ones(3, 3), torch.ones(3, 2)))
+    print(aten_dialect.module()(torch.ones(3, 3), torch.ones(3, 2)))
 except Exception:
     tb.print_exc()
 
@@ -288,23 +287,25 @@ print(edge_program.exported_program())
 # there is only one program, it will by default be saved to the name "forward".
 
 
-def encode(x):
-    return torch.nn.functional.linear(x, torch.randn(5, 10))
+class Encode(torch.nn.Module):
+    def forward(self, x):
+        return torch.nn.functional.linear(x, torch.randn(5, 10))
 
 
-def decode(x):
-    return torch.nn.functional.linear(x, torch.randn(10, 5))
+class Decode(torch.nn.Module):
+    def forward(self, x):
+        return torch.nn.functional.linear(x, torch.randn(10, 5))
 
 
 encode_args = (torch.randn(1, 10),)
 aten_encode: ExportedProgram = export(
-    capture_pre_autograd_graph(encode, encode_args),
+    capture_pre_autograd_graph(Encode(), encode_args),
     encode_args,
 )
 
 decode_args = (torch.randn(1, 5),)
 aten_decode: ExportedProgram = export(
-    capture_pre_autograd_graph(decode, decode_args),
+    capture_pre_autograd_graph(Decode(), decode_args),
     decode_args,
 )
 
@@ -487,17 +488,18 @@ print(exported_program.graph_module.lowered_module_0.original_module)
 # ``LoweredBackendModule`` for each of those subgraphs.
 
 
-def f(a, x, b):
-    y = torch.mm(a, x)
-    z = y + b
-    a = z - a
-    y = torch.mm(a, x)
-    z = y + b
-    return z
+class Foo(torch.nn.Module):
+    def forward(self, a, x, b):
+        y = torch.mm(a, x)
+        z = y + b
+        a = z - a
+        y = torch.mm(a, x)
+        z = y + b
+        return z
 
 
 example_args = (torch.randn(2, 2), torch.randn(2, 2), torch.randn(2, 2))
-pre_autograd_aten_dialect = capture_pre_autograd_graph(f, example_args)
+pre_autograd_aten_dialect = capture_pre_autograd_graph(Foo(), example_args)
 aten_dialect: ExportedProgram = export(pre_autograd_aten_dialect, example_args)
 edge_program: EdgeProgramManager = to_edge(aten_dialect)
 exported_program = edge_program.exported_program()
@@ -521,17 +523,18 @@ print(delegated_program.graph_module.lowered_module_1.original_module)
 # call ``to_backend`` on it:
 
 
-def f(a, x, b):
-    y = torch.mm(a, x)
-    z = y + b
-    a = z - a
-    y = torch.mm(a, x)
-    z = y + b
-    return z
+class Foo(torch.nn.Module):
+    def forward(self, a, x, b):
+        y = torch.mm(a, x)
+        z = y + b
+        a = z - a
+        y = torch.mm(a, x)
+        z = y + b
+        return z
 
 
 example_args = (torch.randn(2, 2), torch.randn(2, 2), torch.randn(2, 2))
-pre_autograd_aten_dialect = capture_pre_autograd_graph(f, example_args)
+pre_autograd_aten_dialect = capture_pre_autograd_graph(Foo(), example_args)
 aten_dialect: ExportedProgram = export(pre_autograd_aten_dialect, example_args)
 edge_program: EdgeProgramManager = to_edge(aten_dialect)
 exported_program = edge_program.exported_program()

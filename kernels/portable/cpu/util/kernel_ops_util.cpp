@@ -462,6 +462,8 @@ bool check_slice_scatter_args(
     int64_t num_values,
     int64_t step,
     Tensor output) {
+  ET_LOG_AND_RETURN_IF_FALSE(input.dim() > 0);
+
   // Check dim. The dim planed to be selected on shall exist in input
   ET_LOG_AND_RETURN_IF_FALSE(dim_is_valid(dim, input.dim()));
 
@@ -656,6 +658,18 @@ Error resize_embedding_output(
       expected_output_size, static_cast<size_t>(out.dim())};
 
   return resize_tensor(out, output_size);
+}
+
+bool check_alpha_type(
+    const ScalarType alpha_type,
+    const ScalarType common_type) {
+  // Verify that alpha type is compatible with common type,
+  // as used by ops such as add and sub.
+  ET_LOG_AND_RETURN_IF_FALSE(
+      canCast(alpha_type, common_type) ||
+      (common_type == ScalarType::Bool && isIntegralType(alpha_type, true)));
+
+  return true;
 }
 
 } // namespace executor

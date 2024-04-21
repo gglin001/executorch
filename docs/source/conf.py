@@ -25,13 +25,12 @@ import sys
 
 import pytorch_sphinx_theme
 
+# To let us import ./custom_directives.py
 sys.path.insert(0, os.path.abspath("."))
-sys.path.insert(0, os.path.abspath("../../.."))
-sys.path.insert(0, os.path.abspath("../.."))
 # -- Project information -----------------------------------------------------
 
 project = "ExecuTorch"
-copyright = "2023, ExecuTorch"
+copyright = "2024, ExecuTorch"
 author = "ExecuTorch Contributors"
 
 
@@ -43,8 +42,6 @@ author = "ExecuTorch Contributors"
 
 import os
 import sys
-
-sys.path.insert(0, os.path.abspath("../../"))
 
 extensions = [
     "breathe",
@@ -183,7 +180,7 @@ html_theme_options = {
     "pytorch_project": "executorch",
     "display_version": True,
     "logo_only": True,
-    "collapse_navigation": False,
+    "collapse_navigation": True,  # changed to True to enable 3rd level nav.
     "sticky_navigation": False,
     "navigation_depth": 4,
     "includehidden": True,

@@ -81,6 +81,14 @@ Topics in this section will help you get started with ExecuTorch.
 
 .. toctree::
    :glob:
+   :maxdepth: 2
+   :caption: Working with LLMs
+   :hidden:
+
+   llm/getting-started
+
+.. toctree::
+   :glob:
    :maxdepth: 1
    :caption: Tutorials
    :hidden:
@@ -92,6 +100,7 @@ Topics in this section will help you get started with ExecuTorch.
    demo-apps-android
    examples-end-to-end-to-lower-model-to-delegate
    tutorial-xnnpack-delegate-lowering
+   build-run-vulkan
    ..
       Alphabetical by backend name. Be sure to keep the same order in the
       customcarditem entries below.
@@ -175,6 +184,7 @@ Topics in this section will help you get started with ExecuTorch.
    :hidden:
 
    native-delegates-executorch-xnnpack-delegate
+   native-delegates-executorch-vulkan-delegate
    backend-delegates-integration
    backend-delegates-dependencies
 
@@ -253,6 +263,13 @@ ExecuTorch tutorials.
    :image: _static/img/generic-pytorch-logo.png
    :link: tutorial-xnnpack-delegate-lowering.html
    :tags: Export,Backend,Delegation,Quantization,XNNPACK
+
+.. customcarditem::
+   :header: Building and Running ExecuTorch with Vulkan Backend
+   :card_description: A tutorial that walks you through the process of building ExecuTorch with Vulkan Backend
+   :image: _static/img/generic-pytorch-logo.png
+   :link: build-run-vulkan.html
+   :tags: Export,Backend,Delegation,Vulkan
 
 ..
    Alphabetical by backend name. Be sure to keep the same order in the Tutorials

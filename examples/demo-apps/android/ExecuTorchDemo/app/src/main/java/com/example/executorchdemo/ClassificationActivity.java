@@ -18,11 +18,10 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
-import com.example.executorchdemo.executor.EValue;
-import com.example.executorchdemo.executor.Module;
-import com.example.executorchdemo.executor.Tensor;
-import com.example.executorchdemo.executor.TensorImageUtils;
 import java.io.IOException;
+import org.pytorch.executorch.EValue;
+import org.pytorch.executorch.Module;
+import org.pytorch.executorch.Tensor;
 
 public class ClassificationActivity extends Activity implements Runnable {
 
@@ -71,7 +70,7 @@ public class ClassificationActivity extends Activity implements Runnable {
             TensorImageUtils.TORCHVISION_NORM_STD_RGB);
 
     // running the model
-    final Tensor outputTensor = module.forward(EValue.from(inputTensor)).toTensor();
+    final Tensor outputTensor = module.forward(EValue.from(inputTensor))[0].toTensor();
 
     // getting tensor content as java array of floats
     final float[] scores = outputTensor.getDataAsFloatArray();

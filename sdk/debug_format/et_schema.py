@@ -124,7 +124,7 @@ class FXOperatorGraph(OperatorGraph):
                 if arg.target == exir.memory.alloc:
                     continue
                 arg_name = FXOperatorGraph._get_node_name(arg)
-            elif isinstance(arg, (int, float, torch.dtype)):
+            elif isinstance(arg, (int, float, torch.dtype, str)):
                 # e.g. The "0" from node.args of squeeze_copy (mm_default, 0)
                 if named_args and len(named_args) > index:
                     arg_name = named_args[index].name + "_" + str(const_count)
@@ -173,7 +173,9 @@ class FXOperatorGraph(OperatorGraph):
             elif isinstance(arg, NoneType):
                 continue
             else:
-                raise Exception(f"Unsupported argument encountered {op}, {name}, {arg}")
+                raise Exception(
+                    f"Unsupported argument encountered {op}, {name}, {arg}, {type(arg)}"
+                )
 
             if isinstance(arg_name, list):
                 for val in arg_name:
@@ -258,7 +260,12 @@ class FXOperatorGraph(OperatorGraph):
                 assert len(args) == 1
                 # Args of op=='output' is a wrapped list of return nodes ([ret_1, ret_2, ...], )
                 in_nodes = [
-                    nodes[FXOperatorGraph._get_node_name(ret)] for ret in args[0]
+                    (
+                        nodes[FXOperatorGraph._get_node_name(ret)]
+                        if ret is not None
+                        else []
+                    )
+                    for ret in args[0]
                 ]
                 node = ValueNode(
                     name,

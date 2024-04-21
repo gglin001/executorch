@@ -16,7 +16,7 @@ from .qnn_constants import OpSoftmax, QNN_OP_PACKAGE_NAME_QTI_AISW
 
 @register_node_visitor
 class Softmax(NodeVisitor):
-    target = "aten._softmax.default"
+    target = ["aten._softmax.default"]
 
     def __init__(self, *args) -> None:
         super().__init__(*args)
@@ -33,6 +33,7 @@ class Softmax(NodeVisitor):
             input_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=True,
         )
         softmax_input_tensors = [softmax_inp_tensor_wrapper]
 
@@ -42,6 +43,7 @@ class Softmax(NodeVisitor):
             output_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=False,
         )
         softmax_output_tensors = [output_tensor_wrapper]
 
@@ -50,6 +52,10 @@ class Softmax(NodeVisitor):
             dim = dim % len(input_tensor.shape)
         if "axis_order" in node.meta:
             dim = node.meta["axis_order"].index(dim)
+
+        # softmax only supports last dimension for now, which is channel in QNN
+        if dim != input_tensor.dim() - 1:
+            return None
 
         softmax_op = PyQnnWrapper.PyQnnOpWrapper(
             node.name,

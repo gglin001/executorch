@@ -16,14 +16,17 @@ project(arm_example)
 option(EXECUTORCH_SELECT_OPS_LIST "Register the following list of ops" OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-if(NOT PYTHON_EXECUTABLE)
-  set(PYTHON_EXECUTABLE python3)
-endif()
 # Source root directory for executorch.
 if(NOT EXECUTORCH_ROOT)
   set(EXECUTORCH_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 endif()
+
+include(${EXECUTORCH_ROOT}/build/Utils.cmake)
+
+if(NOT PYTHON_EXECUTABLE)
+  resolve_python_executable()
+endif()
+
 # Source root directory for pytorch.
 if(NOT TORCH_ROOT)
   set(TORCH_ROOT ${EXECUTORCH_ROOT}/third-party/pytorch)
@@ -44,5 +47,7 @@ include(${EXECUTORCH_ROOT}/build/Codegen.cmake)
 # Executorch (for runtime). Here select all ops in functions.yaml
 gen_selected_ops("" "${EXECUTORCH_SELECT_OPS_LIST}" "")
 generate_bindings_for_kernels(
-  ${EXECUTORCH_ROOT}/kernels/portable/functions.yaml "")
-gen_operators_lib("portable_ops_lib" portable_kernels executorch)
+  FUNCTIONS_YAML ${EXECUTORCH_ROOT}/kernels/portable/functions.yaml)
+gen_operators_lib("arm_portable_ops_lib"
+  KERNEL_LIBS portable_kernels
+  DEPS executorch)

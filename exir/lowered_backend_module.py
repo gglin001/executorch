@@ -8,7 +8,7 @@
 
 import copy
 import operator
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.utils._pytree as pytree
@@ -25,12 +25,15 @@ from executorch.exir.schema import Program
 
 from executorch.exir.tracer import Value
 
-from torch._export.exported_program import ExportedProgram
 from torch._subclasses import FakeTensor
 from torch.export.exported_program import (
+    ConstantArgument,
+    ExportedProgram,
     ExportGraphSignature,
     InputKind,
     InputSpec,
+    ModuleCallEntry,
+    ModuleCallSignature,
     OutputKind,
     OutputSpec,
     TensorArgument,
@@ -56,7 +59,7 @@ class LoweredBackendModule(torch.nn.Module):
     _compile_specs: List[
         CompileSpec
     ]  # A list of backend-specific objects with static metadata to configure the "compilation" process.
-    _original_module: ExportedProgram  # The original EXIR module
+    _original_exported_program: ExportedProgram  # The original EXIR module
 
     def __init__(
         self,
@@ -66,10 +69,39 @@ class LoweredBackendModule(torch.nn.Module):
         compile_specs: List[CompileSpec],
     ) -> None:
         super().__init__()
-        self._original_module = edge_program
+        self._original_exported_program = edge_program
         self._backend_id = backend_id
         self._processed_bytes = processed_bytes
         self._compile_specs = compile_specs
+
+    # pyre-ignore
+    def __deepcopy__(self, memo: Optional[Dict[int, Any]]) -> "LoweredBackendModule":
+        # Copy exported program
+        copied_program = ExportedProgram(
+            root=copy.deepcopy(self._original_exported_program.graph_module),
+            graph=copy.deepcopy(self._original_exported_program.graph),
+            graph_signature=copy.deepcopy(
+                self._original_exported_program.graph_signature
+            ),
+            state_dict=self._original_exported_program.state_dict,
+            range_constraints=copy.deepcopy(
+                self._original_exported_program.range_constraints
+            ),
+            module_call_graph=copy.deepcopy(
+                self._original_exported_program.module_call_graph
+            ),
+            verifier=copy.deepcopy(self._original_exported_program.verifier),
+            constants=self._original_exported_program.constants,
+        )
+
+        res = LoweredBackendModule(
+            edge_program=copied_program,
+            backend_id=self._backend_id,
+            processed_bytes=self._processed_bytes,
+            compile_specs=copy.deepcopy(self._compile_specs, memo),
+        )
+        res.meta = copy.copy(getattr(self, "meta", {}))
+        return res
 
     @property
     def backend_id(self) -> str:
@@ -97,7 +129,7 @@ class LoweredBackendModule(torch.nn.Module):
         """
         Returns the original EXIR module
         """
-        return self._original_module
+        return self._original_exported_program
 
     # TODO(chenlai): consolidate the seriailization config with serialize_to_flatbuffer api
     def buffer(
@@ -110,18 +142,24 @@ class LoweredBackendModule(torch.nn.Module):
         """
         Returns a buffer containing the serialized ExecuTorch binary.
         """
-        out = _serialize_pte_binary(
-            program=self.program(),
-            extract_delegate_segments=extract_delegate_segments,
-            segment_alignment=segment_alignment,
-            constant_tensor_alignment=constant_tensor_alignment,
-            delegate_alignment=delegate_alignment,
+        # TODO(T181463742): avoid calling bytes(..) which incurs large copies.
+        out = bytes(
+            _serialize_pte_binary(
+                program=self.program(),
+                extract_delegate_segments=extract_delegate_segments,
+                segment_alignment=segment_alignment,
+                constant_tensor_alignment=constant_tensor_alignment,
+                delegate_alignment=delegate_alignment,
+            )
         )
         return out
 
     # TODO(chenlai): re-consider recapture instead of manually constructing the program because
     # the meta data construction is done manually.
     def program(self, emit_stacktrace: bool = False) -> Program:
+        # Fix autodpes introuces cyclic dependencies:
+        # program -> verifier -> lowered_backend_module -> program
+        # @manual
         from executorch.exir.program._program import (
             _get_updated_graph_signature,
             _transform,
@@ -157,7 +195,7 @@ class LoweredBackendModule(torch.nn.Module):
         # We'll remove all call_function nodes, insert an call_delegate node, inserting getitems nodes to get the result for call_delegate node
         # and return the list of getitems as the output
 
-        lowered_exported_program = copy.deepcopy(self.original_module)
+        lowered_exported_program = copy.deepcopy(self._original_exported_program)
 
         # The real input nodes are the ones not buffer or parameter
         all_input_nodes = [
@@ -209,7 +247,9 @@ class LoweredBackendModule(torch.nn.Module):
         # Get the output list. Since the output node is a tuple of list, like ([aten_mul_tensor, aten_add_tensor],)
         # We add some handling logic to get the list `[aten_mul_tensor, aten_add_tensor]` properly
         original_output_nodes = [
-            node for node in self.original_module.graph.nodes if node.op == "output"
+            node
+            for node in self._original_exported_program.graph.nodes
+            if node.op == "output"
         ][0].args[0]
 
         delegate_node.meta["spec"] = tuple(
@@ -383,9 +423,27 @@ def arrange_graph_placeholders(
 
 
 # TODO Don't regenerate new signature manually.
-def _get_new_signature(
-    original_program: ExportedProgram, gm: torch.fx.GraphModule
-) -> Tuple[ExportGraphSignature, Dict[str, Union[torch.Tensor, torch.nn.Parameter]]]:
+def _get_new_signature(  # noqa: C901
+    original_program: ExportedProgram,
+    gm: torch.fx.GraphModule,
+    tag: Optional[str] = None,
+) -> Tuple[
+    ExportGraphSignature,
+    Dict[str, Union[torch.Tensor, torch.nn.Parameter]],
+    Dict[str, Union[torch.Tensor, torch.ScriptObject]],
+]:
+    """
+    Args:
+        tag: If tag is None, this means that we are constructing the graph
+        signature for the toplevel graph, after delegation. We need to do this
+        because sometimes delegates will swallow some parameters/buffers, so we
+        need to update the graph signature/state dict to reflect these changes.
+        Otherwise, if tag is not None, this means we are constructing the graph
+        signature for the delegated modules. In this case, we need to look
+        through the input nodes and see which ones were originally
+        parameters/buffers, and lower them down to the delegate.
+    """
+
     old_signature = original_program.graph_signature
 
     input_specs = []
@@ -394,39 +452,20 @@ def _get_new_signature(
         input_specs=input_specs, output_specs=output_specs
     )
     new_state_dict = {}
+    new_constants = {}
+
+    placeholder_nodes = [
+        node.name for node in original_program.graph.nodes if node.op == "placeholder"
+    ]
+    assert len(placeholder_nodes) == len(old_signature.input_specs)
+    input_node_to_sig = dict(zip(placeholder_nodes, old_signature.input_specs))
 
     for node in gm.graph.nodes:
+        is_tagged = tag is None or node.meta.get("delegation_tag", None) == tag
         if node.op == "placeholder":
-            if node.name in old_signature.inputs_to_parameters:
-                parameter_name = old_signature.inputs_to_parameters[node.name]
-                # add param to graph signature
-                input_specs.append(
-                    InputSpec(
-                        kind=InputKind.PARAMETER,
-                        arg=TensorArgument(name=node.name),
-                        target=parameter_name,
-                    )
-                )
 
-                # add param to state_dict
-                new_state_dict[parameter_name] = original_program.state_dict[
-                    parameter_name
-                ]
-            elif node.name in old_signature.inputs_to_buffers:
-                buffer_name = old_signature.inputs_to_buffers[node.name]
-                # add buffer to graph signature
-                input_specs.append(
-                    InputSpec(
-                        kind=InputKind.BUFFER,
-                        arg=TensorArgument(name=node.name),
-                        target=buffer_name,
-                    )
-                )
-
-                # add param to new_state_dict
-                new_state_dict[buffer_name] = original_program.state_dict[buffer_name]
-            else:
-                # not param or buffer then user input
+            if node.name not in input_node_to_sig:
+                assert tag is not None
                 input_specs.append(
                     InputSpec(
                         kind=InputKind.USER_INPUT,
@@ -434,24 +473,105 @@ def _get_new_signature(
                         target=None,
                     )
                 )
-        if node.op == "output":
-            for output in pytree.tree_leaves((node.args, node.kwargs)):
-                if not isinstance(output, torch.fx.Node):
-                    continue
-                output_specs.append(
-                    OutputSpec(
-                        kind=OutputKind.USER_OUTPUT,
-                        arg=TensorArgument(name=output.name),
+                continue
+
+            orig_input_spec = input_node_to_sig[node.name]
+
+            if not isinstance(orig_input_spec.arg, TensorArgument):
+                input_specs.append(orig_input_spec)
+
+            elif is_tagged:
+                input_specs.append(orig_input_spec)
+
+                if orig_input_spec.kind == InputKind.PARAMETER:
+                    new_state_dict[orig_input_spec.target] = (
+                        original_program.state_dict[orig_input_spec.target]
+                    )
+                elif (
+                    orig_input_spec.kind == InputKind.BUFFER
+                    and orig_input_spec.persistent
+                ):
+                    new_state_dict[orig_input_spec.target] = (
+                        original_program.state_dict[orig_input_spec.target]
+                    )
+                elif orig_input_spec.kind == InputKind.BUFFER:
+                    assert not orig_input_spec.persistent
+                    new_constants[orig_input_spec.target] = original_program.constants[
+                        orig_input_spec.target
+                    ]
+                elif orig_input_spec.kind in (
+                    InputKind.CONSTANT_TENSOR,
+                    InputKind.CUSTOM_OBJ,
+                ):
+                    new_constants[orig_input_spec.target] = original_program.constants[
+                        orig_input_spec.target
+                    ]
+
+            else:
+                input_specs.append(
+                    InputSpec(
+                        kind=InputKind.USER_INPUT,
+                        arg=TensorArgument(name=node.name),
                         target=None,
                     )
                 )
 
-    return new_signature, new_state_dict
+        if node.op == "output":
+            output_nodes = pytree.tree_leaves((node.args, node.kwargs))
+
+            if tag is not None:
+                # We are constructing output_specs for the delegate outputs.
+                # These don't have any buffer mutations.
+
+                for output_node in output_nodes:
+                    if not isinstance(output_node, torch.fx.Node):
+                        output_specs.append(
+                            OutputSpec(
+                                kind=OutputKind.USER_OUTPUT,
+                                arg=ConstantArgument(name="", value=output_node),
+                                target=None,
+                            )
+                        )
+                    else:
+                        output_specs.append(
+                            OutputSpec(
+                                kind=OutputKind.USER_OUTPUT,
+                                arg=TensorArgument(name=output_node.name),
+                                target=None,
+                            )
+                        )
+
+            else:
+                # We are reconstruting the toplevel module which contains
+                # delegates. Delegation should not change the number of outputs
+                # in the toplevel module, and it does not touch the mutated buffers
+
+                assert len(old_signature.output_specs) == len(output_nodes)
+                for prev_output_spec, output_node in zip(
+                    old_signature.output_specs, output_nodes
+                ):
+                    if not isinstance(output_node, torch.fx.Node):
+                        assert isinstance(prev_output_spec.arg, ConstantArgument)
+                        output_specs.append(
+                            OutputSpec(
+                                kind=OutputKind.USER_OUTPUT,
+                                arg=ConstantArgument(name="", value=output_node),
+                                target=None,
+                            )
+                        )
+
+                    else:
+                        new_output_spec = copy.deepcopy(prev_output_spec)
+                        new_output_spec.arg.name = output_node.name
+                        output_specs.append(new_output_spec)
+
+    return new_signature, new_state_dict, new_constants
 
 
 def create_exported_program_from_submodule(
     submodule: torch.fx.GraphModule,
     owning_program: ExportedProgram,
+    tag: str,
 ) -> ExportedProgram:
     """
     Creates an ExportedProgram from the given submodule using the parameters and buffers
@@ -469,9 +589,12 @@ def create_exported_program_from_submodule(
     submodule = arrange_graph_placeholders(submodule, owning_program)
 
     # Get updated graph signature
-    subgraph_signature, subgraph_state_dict = _get_new_signature(
-        owning_program, submodule
+    subgraph_signature, subgraph_state_dict, subgraph_constants = _get_new_signature(
+        owning_program, submodule, tag
     )
+
+    in_spec = pytree.tree_flatten((tuple(subgraph_signature.user_inputs), {}))[1]
+    out_spec = pytree.tree_flatten(subgraph_signature.user_outputs)[1]
 
     return ExportedProgram(
         root=submodule,
@@ -479,8 +602,16 @@ def create_exported_program_from_submodule(
         graph_signature=subgraph_signature,
         state_dict=subgraph_state_dict,
         range_constraints=copy.deepcopy(owning_program.range_constraints),
-        module_call_graph=[],
+        module_call_graph=[
+            ModuleCallEntry(
+                "",
+                ModuleCallSignature(
+                    inputs=[], outputs=[], in_spec=in_spec, out_spec=out_spec
+                ),
+            )
+        ],
         verifier=owning_program.verifier,
+        constants=subgraph_constants,
     )
 
 

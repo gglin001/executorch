@@ -7,7 +7,6 @@
 import json
 import pickle
 from dataclasses import dataclass
-from enum import Enum
 from typing import Dict, List, Optional, Union
 from zipfile import BadZipFile, ZipFile
 
@@ -18,8 +17,6 @@ from executorch.exir import (
     ExecutorchProgramManager,
     ExirExportedProgram,
     ExportedProgram,
-    MultiMethodExecutorchProgram,
-    MultiMethodExirExportedProgram,
 )
 from executorch.exir.emit._emitter import _DelegateDebugIdentifierMap
 
@@ -31,8 +28,18 @@ from executorch.sdk.bundled_program.schema.bundled_program_schema import Value
 
 ProgramOutput = List[Value]
 
+try:
+    # breaking change introduced in python 3.11
+    # pyre-ignore
+    from enum import StrEnum
+except ImportError:
+    from enum import Enum
 
-class ETRecordReservedFileNames(str, Enum):
+    class StrEnum(str, Enum):
+        pass
+
+
+class ETRecordReservedFileNames(StrEnum):
     ETRECORD_IDENTIFIER = "ETRECORD_V0"
     EDGE_DIALECT_EXPORTED_PROGRAM = "edge_dialect_exported_program"
     ET_DIALECT_GRAPH_MODULE = "et_dialect_graph_module"
@@ -66,30 +73,16 @@ def _handle_exported_program(
     )
 
 
-def _handle_multi_method_exported_program(
-    etrecord_zip: ZipFile,
-    module_name: str,
-    multi_method: MultiMethodExirExportedProgram,
-) -> None:
-    for method_name, ep in multi_method.methods().items():
-        _handle_exported_program(
-            etrecord_zip, module_name, method_name, ep.exported_program
-        )
-
-
 def _handle_export_module(
     etrecord_zip: ZipFile,
     export_module: Union[
-        MultiMethodExirExportedProgram,
         ExirExportedProgram,
         EdgeProgramManager,
         ExportedProgram,
     ],
     module_name: str,
 ) -> None:
-    if isinstance(export_module, MultiMethodExirExportedProgram):
-        _handle_multi_method_exported_program(etrecord_zip, module_name, export_module)
-    elif isinstance(export_module, ExirExportedProgram):
+    if isinstance(export_module, ExirExportedProgram):
         _handle_exported_program(
             etrecord_zip, module_name, "forward", export_module.exported_program
         )
@@ -151,7 +144,6 @@ def generate_etrecord(
     edge_dialect_program: Union[EdgeProgramManager, ExirExportedProgram],
     executorch_program: Union[
         ExecutorchProgram,
-        MultiMethodExecutorchProgram,
         ExecutorchProgramManager,
         BundledProgram,
     ],
@@ -160,7 +152,6 @@ def generate_etrecord(
             str,
             Union[
                 ExportedProgram,
-                MultiMethodExirExportedProgram,
                 ExirExportedProgram,
                 EdgeProgramManager,
             ],

@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import copy
+import io
 import logging
 from typing import Any, Dict, List, Optional, Sequence, Set, Union
 
@@ -12,6 +13,7 @@ import torch
 import torch._export
 
 from executorch.exir._serialize import _serialize_pte_binary
+from executorch.exir._serialize._cord import Cord
 from executorch.exir.backend.backend_api import to_backend
 from executorch.exir.backend.partitioner import Partitioner
 from executorch.exir.capture._config import EdgeCompileConfig, ExecutorchBackendConfig
@@ -20,11 +22,24 @@ from executorch.exir.emit._emitter import _DelegateDebugIdentifierMap
 from executorch.exir.error import ExportError
 from executorch.exir.pass_manager import PassType
 from executorch.exir.passes import (
-    aten_to_edge_passes,
+    base_post_op_replace_passes,
+    base_pre_op_replace_passes,
+    dead_code_elimination_pass,
     EdgeToBackendOpsPass,
+    MemoryFormatOpsPass,
     OpReplacePass,
 )
-from executorch.exir.passes.remove_assert_async_pass import RemoveAssertAsyncPass
+from executorch.exir.passes.insert_write_back_for_buffers_pass import (
+    insert_write_back_for_buffers_pass,
+)
+from executorch.exir.passes.normalize_view_copy_base_pass import (
+    NormalizeViewCopyBasePass,
+)
+from executorch.exir.passes.remove_graph_asserts_pass import RemoveGraphAssertsPass
+from executorch.exir.passes.remove_mixed_type_operators import RemoveMixedTypeOperators
+from executorch.exir.passes.replace_view_copy_with_view_pass import (
+    ReplaceViewCopyWithViewPass,
+)
 from executorch.exir.passes.spec_prop_pass import SpecPropPass
 from executorch.exir.print_program import pretty_print, print_program
 from executorch.exir.schema import Program
@@ -34,10 +49,12 @@ from executorch.exir.verification.verifier import (
     EXIREdgeDialectVerifier,
     get_aten_verifier,
 )
-from torch._export import ExportedProgram
 from torch._export.passes import ReplaceViewOpsWithViewCopyOpsPass
+from torch.export import ExportedProgram
+from torch.export._remove_auto_functionalized_pass import (
+    unsafe_remove_auto_functionalized_pass,
+)
 from torch.export.exported_program import (
-    _get_updated_range_constraints,
     ConstantArgument,
     ExportGraphSignature,
     InputKind,
@@ -51,6 +68,39 @@ from torch.fx.passes.infra.pass_manager import PassManager
 from torch.utils import _pytree as pytree
 
 Val = Any
+
+
+def _get_updated_range_constraints(gm):
+    def get_shape_env(gm):
+        vals = [
+            node.meta["val"]
+            for node in gm.graph.nodes
+            if node.meta.get("val", None) is not None
+        ]
+        from torch._guards import detect_fake_mode  # type: ignore[21]
+
+        fake_mode = detect_fake_mode(vals)
+        if fake_mode is not None:
+            return fake_mode.shape_env
+        for v in vals:
+            if isinstance(v, torch.SymInt):
+                return v.node.shape_env
+
+    shape_env = get_shape_env(gm)
+    if shape_env is None:
+        return {}
+    range_constraints = {
+        k: v
+        for k, v in shape_env.var_to_range.items()
+        if k not in shape_env.replacements
+    }
+    # Only when we have an unbacked symint, and it's used as constructor inputs,
+    # runtime_var_to_range will make a difference compated to var_to_range.
+    # e.g. [2, oo) -> [0, oo)
+    for k, v in shape_env.var_to_range.items():
+        if k not in shape_env.replacements:
+            range_constraints[k] = v
+    return range_constraints
 
 
 def _get_updated_graph_signature(
@@ -73,10 +123,16 @@ def _get_updated_graph_signature(
         arg = (
             old_input_spec.arg
             if isinstance(old_input_spec.arg, ConstantArgument)
+            # pyre-fixme[20]: Argument `class_fqn` expected.
             else type(old_input_spec.arg)(node.name)
         )
         new_input_specs.append(
-            InputSpec(old_input_spec.kind, arg, old_input_spec.target)
+            InputSpec(
+                old_input_spec.kind,
+                arg,
+                old_input_spec.target,
+                persistent=old_input_spec.persistent,
+            )
         )
         i += 1
 
@@ -92,6 +148,7 @@ def _get_updated_graph_signature(
         arg = (
             old_output_spec.arg
             if isinstance(old_output_spec.arg, ConstantArgument)
+            # pyre-fixme[20]: Argument `class_fqn` expected.
             else type(old_output_spec.arg)(node.name)
         )
         new_output_specs.append(
@@ -124,7 +181,7 @@ def _transform(self, *passes: PassType) -> "ExportedProgram":
         module_call_graph=copy.deepcopy(self._module_call_graph),
         example_inputs=self.example_inputs,
         verifier=self.verifier,
-        tensor_constants=self.tensor_constants,
+        constants=self.constants,
     )
     transformed_ep.graph_module.meta.update(self.graph_module.meta)
     transformed_ep.graph_module.meta.update(res.graph_module.meta)
@@ -159,7 +216,7 @@ def lift_constant_tensor_pass(ep):
 
     fake_mode = list(ep.graph.nodes)[0].meta["val"].fake_mode
     first_user_input = None
-    lifted_buffers = []
+    lifted_constants = []
     for node in ep.graph.nodes:
         if node.op == "placeholder" and node.name in graph_signature.user_inputs:
             first_user_input = node
@@ -189,11 +246,12 @@ def lift_constant_tensor_pass(ep):
                 ep.graph.erase_node(node)
 
                 # Add the constant as a buffer to the graph signature
-                lifted_buffers.append(
+                lifted_constants.append(
                     InputSpec(
                         kind=InputKind.BUFFER,
                         arg=TensorArgument(name=const_placeholder_node.name),
                         target=constant_tensor_fqn,
+                        persistent=True,
                     )
                 )
                 buffers.append(constant_tensor_fqn)
@@ -201,9 +259,9 @@ def lift_constant_tensor_pass(ep):
 
     new_input_specs = []
     for s in graph_signature.input_specs:
-        if s.kind == InputKind.USER_INPUT and len(lifted_buffers) > 0:
-            new_input_specs.extend(lifted_buffers)
-            lifted_buffers.clear()
+        if s.kind == InputKind.USER_INPUT and len(lifted_constants) > 0:
+            new_input_specs.extend(lifted_constants)
+            lifted_constants.clear()
         new_input_specs.append(s)
     ep.graph_signature.input_specs = new_input_specs
     ep.graph_module.recompile()
@@ -320,7 +378,7 @@ class ExirExportedProgram:
         return self
 
     def __call__(self, *args: Any) -> Any:
-        return self.exported_program(*args)
+        return self.exported_program.module()(*args)
 
     # TODO(ycao): Change this to a composable function.
     def to_edge(
@@ -348,6 +406,15 @@ class ExirExportedProgram:
             new_gm_res = p(new_gm)
             assert new_gm_res is not None
             new_gm = new_gm_res.graph_module
+
+        # This is tech debt on tech debt. memory planning pass inherits from some pass infra for GMs.
+        # This isnt enough info now so i cant use call I have to use some new function 'run'.
+        # Existing user passes dont use run so Im just cheating here because they dont need to work on mutable buffers yet.
+        # After exir.capture is gone I will clean up the memory planning infra to be consistent.
+        # Frankly all of exir has big code quality issues because of the migrations that need to be addressed.
+        new_gm_res = config.memory_planning_pass(new_gm)  # pyre-ignore[19]
+        assert new_gm_res is not None
+        new_gm = new_gm_res.graph_module
         new_prog = ExirExportedProgram(
             copy.deepcopy(self.exported_program), self.after_to_edge_passes
         )
@@ -395,6 +462,7 @@ class ExecutorchProgram:
                 "Need to call prog.to_edge prior to constructing ExecutorchProgram."
             )
         self.exported_program = exir_exported_program.exported_program
+        self._pte_data: Optional[Cord] = None
         self._buffer: Optional[bytes] = None
         self._emitter_output: Optional[EmitterOutput] = None
         self._emit_stacktrace: bool = emit_stacktrace
@@ -404,10 +472,9 @@ class ExecutorchProgram:
         self._constant_tensor_alignment: Optional[int] = constant_tensor_alignment
         self._delegate_alignment: Optional[int] = delegate_alignment
 
-    @property
-    def buffer(self) -> bytes:
-        if self._buffer is None:
-            self._buffer = _serialize_pte_binary(
+    def _get_pte_data(self) -> Cord:
+        if self._pte_data is None:
+            self._pte_data = _serialize_pte_binary(
                 program=self.program,
                 extract_delegate_segments=self._extract_delegate_segments,
                 extract_constant_segment=self._extract_constant_segment,
@@ -415,6 +482,20 @@ class ExecutorchProgram:
                 constant_tensor_alignment=self._constant_tensor_alignment,
                 delegate_alignment=self._delegate_alignment,
             )
+        return self._pte_data
+
+    @property
+    def buffer(self) -> bytes:
+        """Returns the serialized ExecuTorch binary as a byte string.
+
+        Note that the call to `buffer` may allocate a very large amount of
+        contiguous memory, depending on the model size. If writing to a file,
+        use `write_to_file` which won't incur additional copies.
+        """
+        # TODO(T181494963): update pybinding to remove buffer cache, which can consume large
+        # amounts of memory longer than necessary.
+        if self._buffer is None:
+            self._buffer = bytes(self._get_pte_data())
         return self._buffer
 
     @property
@@ -450,6 +531,31 @@ class ExecutorchProgram:
     def dump_exported_program(self) -> ExportedProgram:
         return self.exported_program
 
+    def write_to_file(self, open_file: io.BufferedIOBase) -> None:
+        """
+        Writes the serialized ExecuTorch binary to the file at `open_file`. Prefer to use this over
+        `buffer`, as it writes to file without copying into a contiguous block of memory first,
+        reducing the peak memory usage.
+        """
+        self._get_pte_data().write_to_file(open_file)
+
+
+def _get_aten_to_edge_passes(config: EdgeCompileConfig):
+    # TODO: the last two passes for aten_to_edge need to be eliminated_dead_code -> debug_handle_generator. After enable
+    # use_edge_op it can be moved to aten_to_edge_passes before eliminated_dead_code pass. Also ExportPass doesn't play
+    # well with node.meta, meaning after some passes permuting operators, we may lose some information in node.meta.
+    # It might be regenerated in SpecPropPass so it may not be visiable. However debug handle will be lost.
+
+    pre_op_replace_passes = base_pre_op_replace_passes + (
+        [] if config._skip_type_promotion else [RemoveMixedTypeOperators()]
+    )
+
+    post_op_replace_passes = (
+        [] if config._skip_dim_order else [MemoryFormatOpsPass()]
+    ) + base_post_op_replace_passes
+
+    return pre_op_replace_passes, post_op_replace_passes
+
 
 def _to_edge(ep, config: EdgeCompileConfig) -> "ExirExportedProgram":
     if config._check_ir_validity:
@@ -474,16 +580,11 @@ def _to_edge(ep, config: EdgeCompileConfig) -> "ExirExportedProgram":
                 module_call_graph=ep.exported_program.module_call_graph,
                 example_inputs=ep.exported_program.example_inputs,
                 verifier=get_aten_verifier(enable=config._check_ir_validity),
-                tensor_constants=ep.exported_program.tensor_constants,
+                constants=ep.exported_program.constants,
             ),
             False,
         )
-    # TODO: the last two passes for aten_to_edge need to be eliminated_dead_code -> debug_handle_generator. After enable
-    # use_edge_op it can be moved to aten_to_edge_passes before eliminated_dead_code pass. Also ExportPass doesn't play
-    # well with node.meta, meaning after some passes permuting operators, we may lose some information in node.meta.
-    # It might be regenerated in SpecPropPass so it may not be visiable. However debug handle will be lost.
-    pre_op_replace_passes = aten_to_edge_passes.passes[:-2]
-    post_op_replace_passes = aten_to_edge_passes.passes[-2:]
+    pre_op_replace_passes, post_op_replace_passes = _get_aten_to_edge_passes(config)
 
     new_ep = copy.deepcopy(ep).transform(*pre_op_replace_passes)
     if dialect == "ATEN":
@@ -515,14 +616,31 @@ def _to_edge(ep, config: EdgeCompileConfig) -> "ExirExportedProgram":
             enable=config._check_ir_validity,
             class_only=True,
         ),
-        tensor_constants=new_ep.exported_program.tensor_constants,
+        constants=new_ep.exported_program.constants,
     )
     new_ep.after_to_edge_passes = True
     return new_ep
 
 
+def pre_memory_planning_passes(config: ExecutorchBackendConfig) -> List[PassType]:
+    if config.remove_view_copy:
+        # pyre-ignore
+        return [
+            NormalizeViewCopyBasePass(),
+            dead_code_elimination_pass,
+            ReplaceViewCopyWithViewPass(),
+            config.sym_shape_eval_pass,
+            config.to_out_var_pass,
+        ]
+    else:
+        # pyre-ignore
+        return [
+            config.sym_shape_eval_pass,
+            config.to_out_var_pass,
+        ]
+
+
 def edge_to_executorch_passes(config: ExecutorchBackendConfig) -> List[PassType]:
-    # pyre-ignore
     passes: List[PassType] = [
         *config.passes,
         SpecPropPass(),
@@ -530,251 +648,10 @@ def edge_to_executorch_passes(config: ExecutorchBackendConfig) -> List[PassType]
         # this pass, passes cannot be Interpreter-based, because it will fail if
         # there exists an unbacked symint operation.
         EdgeToBackendOpsPass(),
-        RemoveAssertAsyncPass(),
-        config.sym_shape_eval_pass,
-        config.to_out_var_pass,
-        config.memory_planning_pass,
-    ]
+        RemoveGraphAssertsPass(),
+    ] + pre_memory_planning_passes(config)
+
     return passes
-
-
-# MultiMethodExirExportedProgram represents an exported program that contains
-# multiple methods, all as valid entry points to the program.
-#
-# Internally, each method is represented as a separate ExirExportedProgram.
-# Methods (fx.GraphModule's) do not share anything with each other to
-# ensure that each is self-contained. This is important because transformation
-# passes can be local and do not need to concern themselves about other methods
-# that exists on the same MultiMethodExirExportedProgram.
-#
-# TODO(T152006915): Merge this into ExirExportedProgram and then delete it.
-@compatibility(is_backward_compatible=False)
-class MultiMethodExirExportedProgram:
-    def __init__(
-        self,
-        progs: Dict[str, ExirExportedProgram],
-        getters: Optional[Dict[str, Any]] = None,
-    ):
-        # TODO(ycao): Support merging use case where user started by creating
-        # an empty MultiMethodExirExportedProgram and then start adding more
-        # graph modules to it.
-        assert (
-            len(progs) > 0
-        ), "Expected at least 1 graph module in MultiMethodExirExportedProgram"
-        self._method_to_program = progs
-        self._method_to_prim_getter = getters
-
-    # Get the default method, which is either the only method contained
-    # in this MultiMethodExirExportedProgram or the method named `forward`.
-    def _get_default_program(self):
-        if len(self._method_to_program) == 1:
-            return next(iter(self._method_to_program.values()))
-        elif "forward" in self._method_to_program:
-            return self._method_to_program["forward"]
-        else:
-            return None
-
-    def save(self) -> None:
-        # TODO(ycao): Implement.
-        raise NotImplementedError()
-
-    def load(self) -> None:
-        # TODO(ycao): Implement.
-        raise NotImplementedError()
-
-    def find_method(self, name: str) -> Optional[ExirExportedProgram]:
-        return self._method_to_program.get(name)
-
-    def merge(self, other: "MultiMethodExirExportedProgram"):
-        for method_name, program in other.methods().items():
-            assert (
-                method_name not in self._method_to_program
-            ), f"There already is a method named {method_name} in this program"
-            self._method_to_program[method_name] = program
-
-    def transform(self, *passes: PassType) -> "MultiMethodExirExportedProgram":
-        method_name_to_transformed_program = {
-            method_name: prog.transform(*passes)
-            for method_name, prog in self._method_to_program.items()
-        }
-        return MultiMethodExirExportedProgram(method_name_to_transformed_program)
-
-    def methods(self) -> Dict[str, ExirExportedProgram]:
-        return self._method_to_program
-
-    def prim_getters(self) -> Optional[Dict[str, Any]]:
-        return self._method_to_prim_getter
-
-    def __call__(self, *args: Val, **kwargs: Val) -> Val:
-        prog = self._get_default_program()
-
-        assert (
-            prog is not None
-        ), """MultiMethodExirExportedProgram can not be called directly unless "
-        "it only contains a single method or it contains a `forward` method. "
-        "Please look up one of its methods first via "
-        "`MultiMethodExirExportedProgram.find_method(method_name)`."""
-
-        return prog(*args, **kwargs)
-
-    def __repr__(self) -> str:
-        # TODO(ycao): Implement.
-        raise NotImplementedError()
-
-    def __str__(self) -> str:
-        # TODO(ycao): Implement a real one.
-        return super().__str__()
-
-    def access_property_of_default_method(self, property_name: str):
-        default_program = self._get_default_program()
-        assert (
-            default_program is not None
-        ), f"""Exported program contains more than one methods and none of them "
-        "is named `forward`, it is impossible to identify the default method. "
-        "please look up one of its methods first via `find_method(method_name)` "
-        "to access property: {property_name}."""
-        return getattr(default_program.exported_program.graph_module, property_name)
-
-    @property
-    def graph(self):
-        return self.access_property_of_default_method("graph")
-
-    @property
-    def code(self):
-        return self.access_property_of_default_method("code")
-
-    @property
-    def module(self):
-        default_prog = self._get_default_program()
-        assert (
-            default_prog is not None
-        ), """Exported program contains more than"
-        " one methods and none of them is named `forward`,"
-        " it is impossible to identify the default method "
-        "to fetch GraphModule for."""
-        return default_prog.exported_program.graph_module
-
-    # TODO(ycao): Implement custom __reduce__ to account for lost of
-    # meta['val']
-
-    # TODO(ycao): Change this to a composable function.
-    def to_edge(
-        self, config: Optional[EdgeCompileConfig] = None
-    ) -> "MultiMethodExirExportedProgram":
-        if config is None:
-            config = EdgeCompileConfig()
-        method_name_to_edge_prog = {
-            method_name: prog.to_edge(config)
-            for method_name, prog in self.methods().items()
-        }
-        return MultiMethodExirExportedProgram(
-            method_name_to_edge_prog,
-            self.prim_getters(),
-        )
-
-    # TODO(ycao): Change this to a composable function.
-    def to_executorch(
-        self,
-        config: Optional[ExecutorchBackendConfig] = None,
-    ) -> "MultiMethodExecutorchProgram":
-        return multi_method_program_to_executorch(self, config)
-
-
-# TODO(T152006915): Merge this into ExecutorchProgram and then delete it.
-@compatibility(is_backward_compatible=False)
-class MultiMethodExecutorchProgram:
-    def __init__(
-        self,
-        executorch_dialect_program: "MultiMethodExirExportedProgram",
-        emit_stacktrace: bool,
-        extract_delegate_segments: bool,
-        extract_constant_segment: bool,
-        segment_alignment: int,
-        constant_tensor_alignment: Optional[int] = None,
-        delegate_alignment: Optional[int] = None,
-        prim_getters: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self._buffer: Optional[bytes] = None
-        temp: Dict[str, ExportedProgram] = {}
-        for name, prog in executorch_dialect_program.methods().items():
-            temp[name] = prog.exported_program
-        self._emitter_output: EmitterOutput = emit_program(
-            temp,
-            emit_stacktrace,
-            executorch_dialect_program.prim_getters(),
-        )
-        self._executorch_dialect_ir_program = executorch_dialect_program
-        self._extract_delegate_segments: bool = extract_delegate_segments
-        self._extract_constant_segment: bool = extract_constant_segment
-        self._segment_alignment: int = segment_alignment
-        self._constant_tensor_alignment: Optional[int] = constant_tensor_alignment
-        self._delegate_alignment: Optional[int] = delegate_alignment
-        self._prim_getter_cache = prim_getters
-
-    @property
-    def buffer(self) -> bytes:
-        if self._buffer is None:
-            self._buffer = _serialize_pte_binary(
-                program=self._emitter_output.program,
-                extract_delegate_segments=self._extract_delegate_segments,
-                extract_constant_segment=self._extract_constant_segment,
-                segment_alignment=self._segment_alignment,
-                constant_tensor_alignment=self._constant_tensor_alignment,
-                delegate_alignment=self._delegate_alignment,
-            )
-        return self._buffer
-
-    @property
-    def program(self) -> Program:
-        return self._emitter_output.program
-
-    @property
-    def debug_handle_map(self) -> Dict[int, Union[int, List[int]]]:
-        return self._emitter_output.debug_handle_map
-
-    @property
-    def delegate_map(
-        self,
-    ) -> Dict[str, Dict[int, Dict[str, Union[str, _DelegateDebugIdentifierMap]]]]:
-        if self._emitter_output:
-            return self._emitter_output.method_to_delegate_debug_id_map
-        return {}
-
-    # TODO(ycao): This doesn't make sense any more, remove/change later.
-    def dump_graph_module(self) -> torch.fx.GraphModule:
-        return self.get_multi_method_graph_module().module
-
-    def get_multi_method_graph_module(self) -> "MultiMethodExirExportedProgram":
-        return self._executorch_dialect_ir_program
-
-
-# TODO(T152006915): Merge this into to_executorch and then delete it.
-def multi_method_program_to_executorch(
-    edge_dialect_program: MultiMethodExirExportedProgram,
-    config: Optional[ExecutorchBackendConfig] = None,
-) -> MultiMethodExecutorchProgram:
-    config = config or ExecutorchBackendConfig()
-    passes = edge_to_executorch_passes(config)
-    res = {}
-    for method_name, prog in edge_dialect_program._method_to_program.items():
-        new_prog = copy.deepcopy(prog)
-        gm = prog.exported_program.graph_module
-        for p in passes:
-            gm_res = p(gm)
-            assert gm_res is not None
-            gm = gm_res.graph_module
-        _copy_module(new_prog.exported_program.graph_module, gm)
-        res[method_name] = new_prog
-    return MultiMethodExecutorchProgram(
-        executorch_dialect_program=MultiMethodExirExportedProgram(res),
-        emit_stacktrace=config.emit_stacktrace,
-        extract_delegate_segments=config.extract_delegate_segments,
-        extract_constant_segment=config.extract_constant_segment,
-        segment_alignment=config.segment_alignment,
-        constant_tensor_alignment=config.constant_tensor_alignment,
-        delegate_alignment=config.delegate_alignment,
-        prim_getters=edge_dialect_program.prim_getters(),
-    )
 
 
 def to_edge(
@@ -815,48 +692,40 @@ def to_edge(
                 logging.info(f"Input program {name} is not in ATen dialect.")
                 raise e
 
-        # TODO: the last two passes for aten_to_edge need to be eliminated_dead_code -> debug_handle_generator. After enable
-        # use_edge_op it can be moved to aten_to_edge_passes before eliminated_dead_code pass. Also ExportPass doesn't play
-        # well with node.meta, meaning after some passes permuting operators, we may lose some information in node.meta.
-        # It might be regenerated in SpecPropPass so it may not be visiable. However debug handle will be lost.
-        program = lift_constant_tensor_pass(program)
+        pre_op_replace_passes, post_op_replace_passes = _get_aten_to_edge_passes(config)
+
         passes = []
         passes.append(
             ReplaceViewOpsWithViewCopyOpsPass()
         )  # TODO move inside aten_to_edge passes after all users are migrated off v1 capture
-        passes.extend(aten_to_edge_passes.passes[:-2])
+        passes.extend(pre_op_replace_passes)
+        if config._use_edge_ops:
+            passes.append(OpReplacePass())
+
         gm = program.graph_module
-        edge_program = program
         for p in passes:
             gm_res = p(gm)
-            assert gm_res is not None
-            gm = gm_res.graph_module
-
-        if config._use_edge_ops:
-            gm_res = OpReplacePass()(gm)
             assert gm_res is not None
             gm = gm_res.graph_module
 
         edge_program = ExportedProgram(
             root=gm,
             graph=gm.graph,
-            graph_signature=_get_updated_graph_signature(
-                edge_program.graph_signature, gm
-            ),
-            state_dict=edge_program.state_dict,
-            range_constraints=edge_program.range_constraints,
-            module_call_graph=edge_program.module_call_graph,
-            example_inputs=edge_program.example_inputs,
+            graph_signature=_get_updated_graph_signature(program.graph_signature, gm),
+            state_dict=program.state_dict,
+            range_constraints=program.range_constraints,
+            module_call_graph=program.module_call_graph,
+            example_inputs=program.example_inputs,
             verifier=EXIREdgeDialectVerifier(
                 check_edge_ops=config._use_edge_ops,
                 enable=config._check_ir_validity,
                 class_only=True,
             ),
-            tensor_constants=edge_program.tensor_constants,
+            constants=program.constants,
         )
-        passes = []
-        passes.extend(aten_to_edge_passes.passes[-2:])
-        edge_program = _transform(edge_program, *passes)
+        # Lift the tensor constants created in ScalarToTensorPass
+        edge_program = lift_constant_tensor_pass(edge_program)
+        edge_program = _transform(edge_program, *post_op_replace_passes)
         edge_programs[name] = edge_program
     return EdgeProgramManager(edge_programs, constant_methods, config)
 
@@ -874,7 +743,7 @@ class EdgeProgramManager:
 
     def __init__(
         self,
-        edge_programs: Dict[str, ExportedProgram],
+        edge_programs: Union[ExportedProgram, Dict[str, ExportedProgram]],
         constant_methods: Optional[Dict[str, Any]] = None,
         compile_config: Optional[EdgeCompileConfig] = None,
     ):
@@ -884,6 +753,8 @@ class EdgeProgramManager:
         Constructs an EdgeProgramManager from an existing set of exported programs in edge dialect.
         """
         config = compile_config or EdgeCompileConfig()
+        if not isinstance(edge_programs, dict):
+            edge_programs = {"forward": edge_programs}
         for name, program in edge_programs.items():
             try:
                 EXIREdgeDialectVerifier(
@@ -894,7 +765,7 @@ class EdgeProgramManager:
                 logging.info(f"Input program {name} is not in aten dialect.")
                 raise e
 
-        self._edge_programs = edge_programs
+        self._edge_programs: Dict[str, ExportedProgram] = edge_programs
         self._config_methods = constant_methods
 
     @property
@@ -1021,6 +892,8 @@ class EdgeProgramManager:
 
         execution_programs: Dict[str, ExportedProgram] = {}
         for name, program in self._edge_programs.items():
+            program = unsafe_remove_auto_functionalized_pass(program)
+            gm, new_signature = insert_write_back_for_buffers_pass(program)
             new_gm = program.graph_module
             for p in edge_to_executorch_passes(config):
                 new_gm_res = p(new_gm)
@@ -1038,9 +911,19 @@ class EdgeProgramManager:
                     # in the ExportedProgram
                     # TODO(who?)
                     p.update_placeholder_tensor_specs(program, new_gm)
-            new_prog = copy.deepcopy(program)
-            _copy_module(new_prog.graph_module, new_gm)
-            execution_programs[name] = new_prog
+
+            # TODO(jakeszwe): Follow up with compiler on if the deepcopy is necessary and if so how to make it work
+            if hasattr(config.memory_planning_pass, "run"):
+                new_gm_res = config.memory_planning_pass.run(  # pyre-ignore[16]
+                    new_gm, new_signature
+                )
+            else:
+                new_gm_res = config.memory_planning_pass(new_gm)  # pyre-ignore[19]
+            assert new_gm_res is not None
+            new_gm = new_gm_res.graph_module
+
+            _copy_module(program.graph_module, new_gm)
+            execution_programs[name] = program
 
         return ExecutorchProgramManager(
             execution_programs, self._config_methods, config
@@ -1095,8 +978,8 @@ class ExecutorchProgramManager:
             self._config_methods,
         )
 
-        # Serialize emitter output to a buffer
-        self._buffer: bytes = _serialize_pte_binary(
+        # Serialize emitter output, ready to be written to a file.
+        self._pte_data: Cord = _serialize_pte_binary(
             program=self._emitter_output.program,
             extract_delegate_segments=backend_config.extract_delegate_segments,
             extract_constant_segment=backend_config.extract_constant_segment,
@@ -1104,6 +987,7 @@ class ExecutorchProgramManager:
             constant_tensor_alignment=backend_config.constant_tensor_alignment,
             delegate_alignment=backend_config.delegate_alignment,
         )
+        self._buffer: Optional[bytes] = None
 
     @property
     def methods(self) -> Set[str]:
@@ -1158,7 +1042,22 @@ class ExecutorchProgramManager:
 
     @property
     def buffer(self) -> bytes:
+        """Returns the serialized ExecuTorch binary as a byte string.
+
+        Note that the call to `buffer` may allocate a very large amount of
+        contiguous memory, depending on the model size. If writing to a file,
+        use `write_to_file` which won't incur additional copies.
         """
-        Returns a buffer containing the serialized ExecuTorch binary.
-        """
+        # TODO(T181494963): update pybinding to remove buffer cache, which can consume large
+        # amounts of memory longer than necessary.
+        if self._buffer is None:
+            self._buffer = bytes(self._pte_data)
         return self._buffer
+
+    def write_to_file(self, open_file: io.BufferedIOBase) -> None:
+        """
+        Writes the serialized ExecuTorch binary to the file at `open_file`. Prefer to use this over
+        `buffer`, as it writes to file without copying into a contiguous block of memory first,
+        reducing the peak memory usage.
+        """
+        self._pte_data.write_to_file(open_file)

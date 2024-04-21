@@ -16,19 +16,19 @@ Then commit the updated file (if there are any changes).
 import subprocess
 from typing import List
 
-import executorch.exir as exir
-
 import torch
-from executorch.exir import ExecutorchBackendConfig
+from executorch.exir import ExecutorchBackendConfig, to_edge
+
 from executorch.exir.passes import MemoryPlanningPass, ToOutVarPass
 from executorch.exir.print_program import pretty_print
+from executorch.sdk import BundledProgram
 from executorch.sdk.bundled_program.config import MethodTestCase, MethodTestSuite
-from executorch.sdk.bundled_program.core import create_bundled_program
 from executorch.sdk.bundled_program.serialize import (
     serialize_from_bundled_program_to_flatbuffer,
 )
 
 from executorch.test.models.linear_model import LinearModel
+from torch.export import export
 
 
 def main() -> None:
@@ -37,21 +37,17 @@ def main() -> None:
     trace_inputs = (torch.ones(2, 2, dtype=torch.float),)
 
     # Trace to FX Graph.
-    exec_prog = (
-        exir.capture(model, trace_inputs)
-        .to_edge()
-        .to_executorch(
-            config=ExecutorchBackendConfig(
-                memory_planning_pass=MemoryPlanningPass(),
-                to_out_var_pass=ToOutVarPass(),
-            )
+    exec_prog = to_edge(export(model, trace_inputs)).to_executorch(
+        config=ExecutorchBackendConfig(
+            memory_planning_pass=MemoryPlanningPass(),
+            to_out_var_pass=ToOutVarPass(),
         )
     )
     # Emit in-memory representation.
-    pretty_print(exec_prog.program)
+    pretty_print(exec_prog.executorch_program)
 
     # Serialize to flatbuffer.
-    exec_prog.program.version = 0
+    exec_prog.executorch_program.version = 0
 
     # Create test sets
     method_test_cases: List[MethodTestCase] = []
@@ -64,8 +60,7 @@ def main() -> None:
         MethodTestSuite(method_name="forward", test_cases=method_test_cases)
     ]
 
-    bundled_program = create_bundled_program(exec_prog, method_test_suites)
-    pretty_print(bundled_program)
+    bundled_program = BundledProgram(exec_prog, method_test_suites)
 
     bundled_program_flatbuffer = serialize_from_bundled_program_to_flatbuffer(
         bundled_program
@@ -75,7 +70,7 @@ def main() -> None:
         subprocess.run(["hg", "root"], stdout=subprocess.PIPE).stdout.decode().strip()
     )
     with open(
-        f"{fbsource_base_path}/fbcode/executorch/test/models/linear_out_bundled_program.pte",
+        f"{fbsource_base_path}/fbcode/executorch/test/models/linear_out_bundled_program.bpte",
         "wb",
     ) as file:
         file.write(bundled_program_flatbuffer)

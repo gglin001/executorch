@@ -332,6 +332,7 @@ def executorch_generated_lib(
         define_static_targets = False,
         custom_ops_aten_kernel_deps = [],
         custom_ops_requires_runtime_registration = True,
+        custom_ops_requires_aot_registration = True,
         visibility = [],
         aten_mode = False,
         manual_registration = False,
@@ -384,7 +385,7 @@ def executorch_generated_lib(
         deps: Additinal deps of the main C++ library. Needs to be in either `//executorch` or `//caffe2` module.
         platforms: platforms args to runtime.cxx_library (only used when in xplat)
         manual_registration: if true, generate RegisterKernels.cpp and RegisterKernels.h.
-        use_default_aten_ops_lib: If `aten_mode` is True AND this flag is True, use `torch_mobile_all_ops` for ATen operator library.
+        use_default_aten_ops_lib: If `aten_mode` is True AND this flag is True, use `torch_mobile_all_ops_et` for ATen operator library.
         xplat_deps: Additional xplat deps, can be used to provide custom operator library.
         fbcode_deps: Additional fbcode deps, can be used to provide custom operator library.
         compiler_flags: compiler_flags args to runtime.cxx_library
@@ -536,7 +537,7 @@ def executorch_generated_lib(
             platforms = platforms,
         )
 
-    if custom_ops_yaml_target:
+    if custom_ops_yaml_target and custom_ops_requires_aot_registration:
         exir_custom_ops_aot_lib(
             name = "custom_ops_" + name,
             yaml_target = custom_ops_yaml_target,

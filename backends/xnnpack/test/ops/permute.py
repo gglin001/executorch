@@ -31,8 +31,7 @@ class TestPermute(unittest.TestCase):
             z = torch.permute_copy(y, self.dims)
             return z
 
-    def test_fp32_permute(self):
-        inputs = (torch.randn(1, 1, 4, 4),)
+    def _test_permute(self, inputs):
         (
             Tester(self.Permute([0, 2, 3, 1]), inputs)
             .export()
@@ -46,9 +45,16 @@ class TestPermute(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_permute_copy_default"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
+
+    def test_fp16_permute(self):
+        inputs = (torch.randn(1, 1, 4, 4).to(torch.float16),)
+        self._test_permute(inputs)
+
+    def test_fp32_permute(self):
+        inputs = (torch.randn(1, 1, 4, 4),)
+        self._test_permute(inputs)
 
     def test_fp32_permute_copy(self):
         inputs = (torch.randn(1, 1, 4, 4),)
@@ -65,8 +71,7 @@ class TestPermute(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_permute_copy_default"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     def test_qs8_permute(self):
@@ -95,8 +100,7 @@ class TestPermute(unittest.TestCase):
             )
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     def test_qs8_permute_copy(self):
@@ -125,6 +129,5 @@ class TestPermute(unittest.TestCase):
             )
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )

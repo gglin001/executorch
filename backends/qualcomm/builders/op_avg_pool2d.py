@@ -16,7 +16,7 @@ from .qnn_constants import OpPoolAvg2d, QNN_OP_PACKAGE_NAME_QTI_AISW
 
 @register_node_visitor
 class AvgPool2d(NodeVisitor):
-    target = "aten.avg_pool2d.default"
+    target = ["aten.avg_pool2d.default"]
 
     def __init__(self, *args) -> None:
         super().__init__(*args)
@@ -33,6 +33,7 @@ class AvgPool2d(NodeVisitor):
             input_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=True,
         )
 
         output_tensor = self.get_tensor(node, node)
@@ -41,6 +42,7 @@ class AvgPool2d(NodeVisitor):
             output_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=False,
         )
         # kernel info
         filter_size = cast(List[int], node.args[1])

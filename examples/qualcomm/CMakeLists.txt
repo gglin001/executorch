@@ -11,9 +11,6 @@ endif()
 cmake_minimum_required(VERSION 3.19)
 project(qualcomm_runner_example)
 
-if(NOT PYTHON_EXECUTABLE)
-  set(PYTHON_EXECUTABLE python3)
-endif()
 # Source root directory for executorch.
 if(NOT EXECUTORCH_ROOT)
   set(EXECUTORCH_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
@@ -23,9 +20,21 @@ if(NOT TORCH_ROOT)
   set(TORCH_ROOT ${EXECUTORCH_ROOT}/third-party/pytorch)
 endif()
 
+include(${EXECUTORCH_ROOT}/build/Utils.cmake)
+include(${EXECUTORCH_ROOT}/build/Codegen.cmake)
+
+if(NOT PYTHON_EXECUTABLE)
+  resolve_python_executable()
+endif()
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Debug)
+endif()
+
 # Find prebuilt libraries. executorch package should contain
 # portable_ops_lib, etdump, bundled_program.
 find_package(executorch CONFIG REQUIRED)
+target_compile_options(executorch INTERFACE -DET_EVENT_TRACER_ENABLED)
 find_package(gflags REQUIRED)
 
 set(_common_compile_options -Wno-deprecated-declarations -fPIC)
@@ -36,7 +45,6 @@ set(_common_include_directories ${EXECUTORCH_ROOT}/..)
 #
 # The `_<target>_srcs` lists are defined by including ${EXECUTORCH_SRCS_FILE}.
 #
-include(${EXECUTORCH_ROOT}/build/Utils.cmake)
 set(EXECUTORCH_SRCS_FILE
   "${CMAKE_CURRENT_BINARY_DIR}/../../executorch_srcs.cmake"
 )
@@ -50,13 +58,18 @@ get_filename_component(EXECUTORCH_SOURCE_DIR
 set(_qnn_executor_runner__srcs ${_executor_runner__srcs})
 
 # portable_ops_lib
-include(${EXECUTORCH_ROOT}/build/Codegen.cmake)
 gen_selected_ops("" "" "ON")
 generate_bindings_for_kernels(
-  ${EXECUTORCH_ROOT}/kernels/portable/functions.yaml ""
+  FUNCTIONS_YAML ${EXECUTORCH_ROOT}/kernels/portable/functions.yaml
 )
-gen_operators_lib("portable_ops_lib" portable_kernels executorch)
-target_include_directories(portable_ops_lib
+gen_operators_lib("full_portable_ops_lib"
+  KERNEL_LIBS portable_kernels
+  DEPS executorch)
+target_compile_options(full_portable_ops_lib
+    INTERFACE
+    -DET_EVENT_TRACER_ENABLED
+)
+target_include_directories(full_portable_ops_lib
     PUBLIC
     ${_common_include_directories}
 )
@@ -87,7 +100,9 @@ target_include_directories(qnn_executor_runner
 )
 target_link_libraries(qnn_executor_runner
     qnn_executorch_backend
-    portable_ops_lib
+    full_portable_ops_lib
+    etdump
+    ${FLATCCRT_LIB}
     gflags
 )
 target_compile_options(qnn_executor_runner

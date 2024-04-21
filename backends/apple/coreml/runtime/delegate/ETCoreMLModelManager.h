@@ -1,14 +1,21 @@
 //
 // ETCoreMLModelManager.h
 //
-// Copyright © 2023 Apple Inc. All rights reserved.
+// Copyright © 2024 Apple Inc. All rights reserved.
 //
 // Please refer to the license found in the LICENSE file in the root directory of the source tree.
 
-
 #import <CoreML/CoreML.h>
 
+#import <vector>
+
 NS_ASSUME_NONNULL_BEGIN
+
+namespace executorchcoreml {
+struct ModelLoggingOptions;
+class ModelEventLogger;
+class MultiArray;
+};
 
 @class ETCoreMLModel;
 @class ETCoreMLAssetManager;
@@ -16,6 +23,7 @@ NS_ASSUME_NONNULL_BEGIN
 typedef void ModelHandle;
 
 /// A class responsible for managing the models loaded by the delegate.
+__attribute__((objc_subclassing_restricted))
 @interface ETCoreMLModelManager : NSObject
 
 + (instancetype)new NS_UNAVAILABLE;
@@ -24,7 +32,7 @@ typedef void ModelHandle;
 
 /// Constructs an `ETCoreMLModelManager` instance.
 ///
-/// @param assetManager The asset manager that will be used to store the compiled models.
+/// @param assetManager The asset manager used to manage storage of compiled models.
 - (instancetype)initWithAssetManager:(ETCoreMLAssetManager*)assetManager NS_DESIGNATED_INITIALIZER;
 
 /// Loads the model from the AOT  data.
@@ -45,11 +53,27 @@ typedef void ModelHandle;
 /// Executes the loaded model.
 ///
 /// @param handle The handle to the loaded model.
-/// @param args The arguments to the model.
+/// @param args The arguments (inputs and outputs) of the model.
+/// @param loggingOptions The model logging options.
 /// @param error   On failure, error is filled with the failure information.
 /// @retval `YES` if the execution succeeded otherwise `NO`.
 - (BOOL)executeModelWithHandle:(ModelHandle*)handle
                           args:(NSArray<MLMultiArray*>*)args
+                loggingOptions:(const executorchcoreml::ModelLoggingOptions&)loggingOptions
+                   eventLogger:(const executorchcoreml::ModelEventLogger* _Nullable)eventLogger
+                         error:(NSError* __autoreleasing*)error;
+
+/// Executes the loaded model.
+///
+/// @param handle The handle to the loaded model.
+/// @param argsVec The arguments (inputs and outputs) of the model.
+/// @param loggingOptions The model logging options.
+/// @param error   On failure, error is filled with the failure information.
+/// @retval `YES` if the execution succeeded otherwise `NO`.
+- (BOOL)executeModelWithHandle:(ModelHandle*)handle
+                       argsVec:(const std::vector<executorchcoreml::MultiArray>&)argsVec
+                loggingOptions:(const executorchcoreml::ModelLoggingOptions&)loggingOptions
+                   eventLogger:(const executorchcoreml::ModelEventLogger* _Nullable)eventLogger
                          error:(NSError* __autoreleasing*)error;
 
 /// Unloads the loaded model.

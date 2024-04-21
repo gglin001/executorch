@@ -18,14 +18,15 @@
 cmake_minimum_required(VERSION 3.19)
 project(selective_build_example)
 
-if(NOT PYTHON_EXECUTABLE)
-  set(PYTHON_EXECUTABLE python3)
-endif()
-
 set(EXECUTORCH_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(TORCH_ROOT ${EXECUTORCH_ROOT}/third-party/pytorch)
+
 include(${EXECUTORCH_ROOT}/build/Utils.cmake)
 include(${EXECUTORCH_ROOT}/build/Codegen.cmake)
+
+if(NOT PYTHON_EXECUTABLE)
+  resolve_python_executable()
+endif()
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -99,9 +100,13 @@ gen_selected_ops(
   "${EXECUTORCH_SELECT_OPS_LIST}"
   "${EXECUTORCH_SELECT_ALL_OPS}")
 
-generate_bindings_for_kernels(${EXECUTORCH_ROOT}/kernels/portable/functions.yaml
-                              "${_custom_ops_yaml}")
-gen_operators_lib("select_build_lib" ${_kernel_lib} executorch)
+generate_bindings_for_kernels(
+  FUNCTIONS_YAML ${EXECUTORCH_ROOT}/kernels/portable/functions.yaml
+  CUSTOM_OPS_YAML "${_custom_ops_yaml}")
+gen_operators_lib(
+  "select_build_lib"
+  KERNEL_LIBS ${_kernel_lib}
+  DEPS executorch)
 
 list(TRANSFORM _executor_runner__srcs PREPEND "${EXECUTORCH_ROOT}/")
 
@@ -113,7 +118,11 @@ add_executable(selective_build_test ${_executor_runner__srcs})
 if(CMAKE_BUILD_TYPE EQUAL "RELEASE")
   target_link_options(selective_build_test PRIVATE "LINKER:--gc-sections")
 endif()
-target_link_libraries(selective_build_test executorch gflags select_build_lib)
+target_link_libraries(
+  selective_build_test PRIVATE executorch gflags select_build_lib
+)
+target_link_options_shared_lib(select_build_lib)
+target_link_options_shared_lib(executorch)
 target_compile_options(selective_build_test PUBLIC ${_common_compile_options})
 
 # Print all summary

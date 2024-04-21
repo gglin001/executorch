@@ -14,9 +14,6 @@ if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
 
-if(NOT PYTHON_EXECUTABLE)
-  set(PYTHON_EXECUTABLE python3)
-endif()
 # Source root directory for executorch.
 if(NOT EXECUTORCH_ROOT)
   set(EXECUTORCH_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
@@ -28,6 +25,10 @@ endif()
 
 include(${EXECUTORCH_ROOT}/build/Utils.cmake)
 include(${EXECUTORCH_ROOT}/build/Codegen.cmake)
+
+if(NOT PYTHON_EXECUTABLE)
+  resolve_python_executable()
+endif()
 
 set(_common_compile_options -Wno-deprecated-declarations -fPIC)
 
@@ -51,9 +52,12 @@ target_compile_options(executorch INTERFACE -DET_EVENT_TRACER_ENABLED)
 gen_selected_ops("" "" "ON")
 # Expect gen_selected_ops output file to be selected_operators.yaml
 generate_bindings_for_kernels(
-  ${EXECUTORCH_ROOT}/kernels/portable/functions.yaml ""
+  FUNCTIONS_YAML ${EXECUTORCH_ROOT}/kernels/portable/functions.yaml
 )
-gen_operators_lib("portable_ops_lib" portable_kernels executorch)
+gen_operators_lib(
+  "portable_ops_lib"
+  KERNEL_LIBS portable_kernels
+  DEPS executorch)
 
 target_compile_options(portable_ops_lib INTERFACE -DET_EVENT_TRACER_ENABLED)
 target_include_directories(

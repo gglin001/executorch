@@ -12,64 +12,14 @@
 #include <limits>
 
 #include <executorch/kernels/portable/cpu/scalar_utils.h>
+#include <executorch/kernels/portable/cpu/util/broadcast_util.h>
 #include <executorch/kernels/portable/cpu/util/functional_util.h>
+#include <executorch/kernels/portable/cpu/util/math_util.h>
 #include <executorch/runtime/kernel/kernel_includes.h>
 
 namespace torch {
 namespace executor {
 namespace native {
-
-namespace {
-
-//
-// Override min/max so we can emulate PyTorch's behavior with NaN entries.
-//
-
-template <
-    typename FLOAT_T,
-    typename std::enable_if<std::is_floating_point<FLOAT_T>::value, bool>::
-        type = true>
-FLOAT_T min_override(FLOAT_T a, FLOAT_T b) {
-  if (std::isnan(a)) {
-    return a;
-  } else if (std::isnan(b)) {
-    return b;
-  } else {
-    return std::min(a, b);
-  }
-}
-
-template <
-    typename FLOAT_T,
-    typename std::enable_if<std::is_floating_point<FLOAT_T>::value, bool>::
-        type = true>
-FLOAT_T max_override(FLOAT_T a, FLOAT_T b) {
-  if (std::isnan(a)) {
-    return a;
-  } else if (std::isnan(b)) {
-    return b;
-  } else {
-    return std::max(a, b);
-  }
-}
-
-template <
-    typename INT_T,
-    typename std::enable_if<std::is_integral<INT_T>::value, bool>::type = true>
-INT_T min_override(INT_T a, INT_T b) {
-  return std::min(a, b);
-}
-
-template <
-    typename INT_T,
-    typename std::enable_if<std::is_integral<INT_T>::value, bool>::type = true>
-INT_T max_override(INT_T a, INT_T b) {
-  return std::max(a, b);
-}
-
-} // namespace
-
-using namespace utils;
 
 using Scalar = exec_aten::Scalar;
 using ScalarType = exec_aten::ScalarType;
@@ -94,7 +44,7 @@ bool is_out_of_bounds(CTYPE_VAL val) {
 
   ET_SWITCH_SCALAR_OBJ_TYPES(val_type, ctx, "clamp.out", CTYPE_VAL, [&]() {
     CTYPE_VAL val = 0;
-    ET_EXTRACT_SCALAR(val_scalar, val);
+    utils::extract_scalar(val_scalar, &val);
     if (isIntegralType(out_type, /*includeBool=*/false)) {
       ET_SWITCH_INT_TYPES(out_type, ctx, "clamp.out", CTYPE_OUT, [&]() {
         if (is_out_of_bounds<CTYPE_VAL, CTYPE_OUT, long>(val)) {
@@ -160,10 +110,14 @@ Tensor& clamp_out(
         out);
   }
 
-  ET_CHECK_MSG(
-      has_min || has_max, "At least one of 'min' or 'max' must not be None");
+  ET_KERNEL_CHECK_MSG(
+      ctx,
+      has_min || has_max,
+      InvalidArgument,
+      out,
+      "At least one of 'min' or 'max' must not be None");
 
-  ET_CHECK(common_type == out_type);
+  ET_KERNEL_CHECK(ctx, common_type == out_type, InvalidArgument, out);
 
   ET_SWITCH_REAL_TYPES(out_type, ctx, "clamp", CTYPE_OUT, [&]() {
     // Extract optional min value
@@ -171,7 +125,7 @@ Tensor& clamp_out(
     if (has_min) {
       ET_SWITCH_SCALAR_OBJ_TYPES(min_type, ctx, "clamp", CTYPE_MIN, [&]() {
         CTYPE_MIN min_val = 0;
-        ET_EXTRACT_SCALAR(min_opt.value(), min_val);
+        utils::extract_scalar(min_opt.value(), &min_val);
         min = static_cast<CTYPE_OUT>(min_val);
       });
     }
@@ -181,7 +135,7 @@ Tensor& clamp_out(
     if (has_max) {
       ET_SWITCH_SCALAR_OBJ_TYPES(max_type, ctx, "clamp", CTYPE_MAX, [&]() {
         CTYPE_MAX max_val = 0;
-        ET_EXTRACT_SCALAR(max_opt.value(), max_val);
+        utils::extract_scalar(max_opt.value(), &max_val);
         max = static_cast<CTYPE_OUT>(max_val);
       });
     }
@@ -191,16 +145,96 @@ Tensor& clamp_out(
           [has_min, min, has_max, max](const CTYPE_IN val_in) {
             CTYPE_OUT val_out = static_cast<CTYPE_OUT>(val_in);
             if (has_min) {
-              val_out = max_override(val_out, min);
+              val_out = utils::max_override(val_out, min);
             }
             if (has_max) {
-              val_out = min_override(val_out, max);
+              val_out = utils::min_override(val_out, max);
             }
             return val_out;
           },
           in.const_data_ptr<CTYPE_IN>(),
           out.mutable_data_ptr<CTYPE_OUT>(),
           in.numel());
+    });
+  });
+
+  return out;
+}
+
+Tensor& clamp_tensor_out(
+    RuntimeContext& ctx,
+    const Tensor& in,
+    const exec_aten::optional<Tensor>& min_opt,
+    const exec_aten::optional<Tensor>& max_opt,
+    Tensor& out) {
+  (void)ctx;
+
+  bool has_min = min_opt.has_value();
+  bool has_max = max_opt.has_value();
+
+  ET_KERNEL_CHECK_MSG(
+      ctx,
+      has_min || has_max,
+      InvalidArgument,
+      out,
+      "At least one of 'min' or 'max' must not be None");
+
+  const Tensor& min = has_min ? min_opt.value() : in;
+  const Tensor& max = has_max ? max_opt.value() : in;
+
+  ET_KERNEL_CHECK(
+      ctx,
+      resize_to_broadcast_target_size(in, min, max, out) == Error::Ok,
+      InvalidArgument,
+      out);
+
+  ScalarType in_type = in.scalar_type();
+  ScalarType min_type = min.scalar_type();
+  ScalarType max_type = max.scalar_type();
+  ScalarType common_type = in_type;
+  ScalarType out_type = out.scalar_type();
+
+  if (has_min) {
+    common_type = promoteTypes(common_type, min_type);
+  }
+  if (has_max) {
+    common_type = promoteTypes(common_type, max_type);
+  }
+
+  ET_KERNEL_CHECK(ctx, canCast(common_type, out_type), InvalidArgument, out);
+
+  constexpr auto name = "clamp.Tensor_out";
+
+  ET_SWITCH_REALB_TYPES(in_type, ctx, name, CTYPE_IN, [&]() {
+    ET_SWITCH_REALB_TYPES(min_type, ctx, name, CTYPE_MIN, [&]() {
+      ET_SWITCH_REALB_TYPES(max_type, ctx, name, CTYPE_MAX, [&]() {
+        ET_SWITCH_REALB_TYPES(out_type, ctx, name, CTYPE_OUT, [&]() {
+          apply_ternary_elementwise_fn<
+              CTYPE_IN,
+              CTYPE_MIN,
+              CTYPE_MAX,
+              CTYPE_OUT>(
+              [has_min, has_max](
+                  const CTYPE_IN val_in,
+                  const CTYPE_MIN val_min,
+                  const CTYPE_MAX val_max) {
+                CTYPE_OUT val_out = static_cast<CTYPE_OUT>(val_in);
+                if (has_min) {
+                  val_out = utils::max_override(
+                      val_out, static_cast<CTYPE_OUT>(val_min));
+                }
+                if (has_max) {
+                  val_out = utils::min_override(
+                      val_out, static_cast<CTYPE_OUT>(val_max));
+                }
+                return val_out;
+              },
+              in,
+              min,
+              max,
+              out);
+        });
+      });
     });
   });
 

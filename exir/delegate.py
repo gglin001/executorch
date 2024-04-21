@@ -20,21 +20,17 @@ from torch.fx.experimental.proxy_tensor import (
     ProxyTorchDispatchMode,
     track_tensor_tree,
 )
-from torch.utils._python_dispatch import _get_current_dispatch_mode
 from torch.utils._pytree import tree_flatten
 
 
 executorch_call_delegate = HigherOrderOperator("executorch_call_delegate")
-# pyre-ignore
 executorch_call_delegate.fallthrough(torch._C.DispatchKey.PythonDispatcher)
-# pyre-ignore
 executorch_call_delegate.fallthrough(torch._C.DispatchKey.PythonTLSSnapshot)
 executorch_call_delegate.fallthrough(torch._C.DispatchKey.ADInplaceOrView)
-executorch_call_delegate.fallthrough(torch._C.DispatchKey.BackendSelect)
-# pyre-ignore
 executorch_call_delegate.fallthrough(torch._C.DispatchKey.AutocastCPU)
 
 LOWERED_BACKEND_MODULE_TYPE = "LoweredBackendModule"
+
 
 # pyre-ignore
 def trace_call_delegate(proxy_mode, func_overload, lowered_module, *args):
@@ -50,7 +46,7 @@ def trace_call_delegate(proxy_mode, func_overload, lowered_module, *args):
         )
 
     with disable_proxy_modes_tracing():
-        out = lowered_module.original_module(*args)
+        out = call_delegate_cpu(lowered_module, *args)
 
     get_lowered_module_name(proxy_mode.tracer.root, lowered_module)
 
@@ -65,9 +61,18 @@ def trace_call_delegate(proxy_mode, func_overload, lowered_module, *args):
 @executorch_call_delegate.py_impl(torch._C.DispatchKey.CompositeExplicitAutograd)
 # pyre-ignore
 def call_delegate_cpu(lowered_module, *args):
-    mode = _get_current_dispatch_mode()
-    assert mode is None, "Mode should never be enabled for CPU key"
-    return lowered_module.original_module(*args)
+    # FX creates this immutable_dict/list concept. Get rid of this.
+    map_types = {
+        torch.fx.immutable_collections.immutable_dict: dict,
+        torch.fx.immutable_collections.immutable_list: list,
+    }
+    new_args = pytree.tree_map_only(
+        tuple(map_types.keys()),
+        lambda a: map_types[type(a)](a),
+        args,
+        lambda a: isinstance(a, tuple(map_types.keys())),
+    )
+    return lowered_module.original_module.module()(*new_args)
 
 
 @executorch_call_delegate.py_impl(torch._C.DispatchKey.Autograd)
@@ -97,7 +102,7 @@ def call_delegate_autograd(lowered_module, *args):
                         var.requires_grad = True
                 return var
 
-            return pytree.tree_map(fake_requires_grad, res)
+            return pytree.tree_map_only(torch.Tensor, fake_requires_grad, res)
 
         return res
 
@@ -113,7 +118,7 @@ def call_delegate_proxy_torch_dispatch_mode(mode, lowered_module, *args):
 # pyre-ignore
 def call_delegate_fake_tensor_mode(mode, lowered_module, *args):
     with mode:
-        return lowered_module.original_module(*args)
+        return call_delegate_cpu(lowered_module, *args)
 
 
 @executorch_call_delegate.py_functionalize_impl

@@ -6,12 +6,14 @@
 
 # pyre-strict
 
-from typing import List
+from typing import List, Optional
 
 import torch
 from executorch.exir.delegate import executorch_call_delegate
 from executorch.exir.pass_base import ExportPass, NodeMetadata, ProxyValue
 from executorch.exir.tensor import TensorSpec
+from torch.export.exported_program import ExportGraphSignature
+from torch.fx.node import Node
 from torch.utils import _pytree as pytree
 
 
@@ -23,6 +25,25 @@ def make_spec(x):
         return x
     else:
         return None
+
+
+def _is_mutable_buffer(
+    node: Node, graph_signature: Optional[ExportGraphSignature] = None
+) -> bool:
+    """
+    Check if the node is mutable buffer according to the provided graph signature.
+    """
+    # graph signature is None for memory planning passes not called from EdgeProgramManager, these paths are deprecated so mutable buffers are not supported on them.
+    if graph_signature is None:
+        return False
+    if node.op == "placeholder":
+        if isinstance(node.target, str):
+            if node.target in graph_signature.inputs_to_buffers:
+                fqn = graph_signature.inputs_to_buffers[node.target]
+                # if the buffer is mutated then record that
+                if fqn in graph_signature.buffers_to_mutate.values():
+                    return True
+    return False
 
 
 class SpecPropPass(ExportPass):
@@ -38,7 +59,7 @@ class SpecPropPass(ExportPass):
 
     def update_placeholder_tensor_specs(
         self,
-        exported_program: torch._export.ExportedProgram,
+        exported_program: torch.export.ExportedProgram,
         graph_module: torch.fx.GraphModule,
     ) -> None:
         """
@@ -53,6 +74,10 @@ class SpecPropPass(ExportPass):
             spec = node.meta["spec"]
             if isinstance(node.target, str) and (
                 node.target in exported_program.graph_signature.inputs_to_parameters
+                or (
+                    node.target in exported_program.graph_signature.inputs_to_buffers
+                    and not _is_mutable_buffer(node, exported_program.graph_signature)
+                )
             ):
                 spec.const = True
 
@@ -85,21 +110,20 @@ class SpecPropPass(ExportPass):
     def call_map(
         self,
         f: torch.fx.GraphModule,
-        num_args: int,
-        args: List[ProxyValue],
+        mapped_args: List[ProxyValue],
+        operands: List[ProxyValue],
         meta: NodeMetadata,
     ) -> ProxyValue:
-        args_data = pytree.tree_map_only(ProxyValue, lambda x: x.data, args)
-        xs_data = args_data[:num_args]
+        mapped_dim_size = [arg.data for arg in mapped_args][0].size(0)
         *_, body_out_node = f.graph.nodes
         body_out_node_fake_tensor = body_out_node.meta["val"]
         map_fake_tensor = pytree.tree_map_only(
             torch.Tensor,
-            lambda x: x.new_empty(xs_data[0].size(0), *x.shape),
+            lambda x: x.new_empty(mapped_dim_size, *x.shape),
             body_out_node_fake_tensor,
         )
         meta["spec"] = pytree.tree_map(make_spec, map_fake_tensor)
-        return super().call_map(f, num_args, args, meta)
+        return super().call_map(f, mapped_args, operands, meta)
 
     # pyre-ignore
     def call_delegate(self, lowered_module, args, kwargs, meta):

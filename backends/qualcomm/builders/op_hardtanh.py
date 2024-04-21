@@ -17,7 +17,7 @@ from .qnn_constants import OpReluMinMax, QNN_OP_PACKAGE_NAME_QTI_AISW
 
 @register_node_visitor
 class HardTanhVisitor(NodeVisitor):
-    target = "aten.hardtanh.default"
+    target = ["aten.hardtanh.default"]
 
     def __init__(self, *args) -> None:
         super().__init__(*args)
@@ -34,6 +34,7 @@ class HardTanhVisitor(NodeVisitor):
             input_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=True,
         )
 
         # default value of output_min and output_max
@@ -52,6 +53,7 @@ class HardTanhVisitor(NodeVisitor):
             output_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=False,
         )
 
         hardtanh_op = PyQnnWrapper.PyQnnOpWrapper(

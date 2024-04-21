@@ -30,6 +30,7 @@ class QuantizeOpBase(NodeVisitor):
             input_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=True,
         )
         quant_input_tensors.append(inp_tensor_wrapper)
 
@@ -45,6 +46,7 @@ class QuantizeOpBase(NodeVisitor):
             output_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=False,
         )
         quant_output_tensors = [output_tensor_wrapper]
 
@@ -61,9 +63,9 @@ class QuantizeOpBase(NodeVisitor):
 
 @register_node_visitor
 class PerTensorQuantize(QuantizeOpBase):
-    target = "quantized_decomposed.quantize_per_tensor.default"
+    target = ["quantized_decomposed.quantize_per_tensor.default"]
 
 
 @register_node_visitor
 class PerChannelQuantize(QuantizeOpBase):
-    target = "quantized_decomposed.quantize_per_channel.default"
+    target = ["quantized_decomposed.quantize_per_channel.default"]

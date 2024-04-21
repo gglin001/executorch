@@ -1,6 +1,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This yaml file contains operators that are defined by the ATen library.
+
+- op: _cdist_forward.out
+
 - op: _fake_quantize_per_tensor_affine_cachemask_tensor_qparams.out
 
 - op: _linalg_det.result
@@ -9,11 +12,19 @@
 
 - op: _log_softmax.out
 
+- op: _native_batch_norm_legit.out
+
+- op: _native_batch_norm_legit.no_stats_out
+
 - op: _native_batch_norm_legit_no_training.out
+
+- op: _pdist_forward.out
 
 - op: _reshape_alias_copy.out
 
 - op: _softmax.out
+
+- op: copy_
 
 - op: _to_copy.out
 
@@ -41,6 +52,10 @@
 
 - op: any.all_out
 
+- op: any.dims_out
+
+- op: any.out
+
 - op: arange.out
 
 - op: arange.start_out
@@ -56,6 +71,8 @@
 - op: asinh.out
 
 - op: atan.out
+
+- op: atan2.out
 
 - op: atanh.out
 
@@ -88,6 +105,8 @@
 - op: clamp.out
   cpp_no_default_args: ['min']
 
+- op: clamp.Tensor_out
+
 - op: clone.out
 
 - op: constant_pad_nd.out
@@ -108,7 +127,11 @@
 
 - op: detach_copy.out
 
+- op: diagonal_copy.out
+
 - op: div.out
+
+- op: div.Scalar_mode_out
 
 - op: div.Scalar_out
 
@@ -128,11 +151,15 @@
 
 - op: expand_copy.out
 
+- op: expm1.out
+
 - op: eye.out
 
 - op: fill.Scalar_out
 
 - op: fill.Tensor_out
+
+- op: flip.out
 
 - op: floor_divide.out
 
@@ -186,6 +213,12 @@
 
 - op: log.out
 
+- op: log10.out
+
+- op: log1p.out
+
+- op: log2.out
+
 - op: logical_and.out
 
 - op: logical_not.out
@@ -208,6 +241,8 @@
 
 - op: max.unary_out
 
+- op: maximum.out
+
 - op: mean.out
 
 - op: min.dim_min
@@ -221,6 +256,8 @@
 - op: mul.Scalar_out
 
 - op: native_batch_norm.out
+
+- op: native_group_norm.out
 
 - op: native_layer_norm.out
 
@@ -244,6 +281,10 @@
 
 - op: pow.Tensor_Scalar_out
 
+- op: prod.int_out
+
+- op: prod.out
+
 - op: reciprocal.out
 
 - op: relu.out
@@ -253,6 +294,20 @@
 - op: remainder.Scalar_out
 
 - op: repeat.out
+
+- op: reflection_pad1d.out
+
+- op: reflection_pad2d.out
+
+- op: reflection_pad3d.out
+
+- op: replication_pad1d.out
+
+- op: replication_pad2d.out
+
+- op: replication_pad3d.out
+
+- op: roll.out
 
 - op: round.out
 
@@ -316,6 +371,8 @@
 
 - op: tril.out
 
+- op: trunc.out
+
 - op: unbind_copy.int_out
 
 - op: unsafe_split.Tensor_out
@@ -327,6 +384,8 @@
 - op: upsample_nearest2d.out
 
 - op: upsample_nearest2d.vec_out
+
+- op: var.correction_out
 
 - op: var.out
 

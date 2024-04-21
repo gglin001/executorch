@@ -3,20 +3,19 @@
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
-from typing import cast, Dict
+from typing import Dict
 
 import executorch.backends.qualcomm.python.PyQnnWrapperAdaptor as PyQnnWrapper
 
-import numpy as np
 import torch
 
 from .node_visitor import NodeVisitor, register_node_visitor
-from .qnn_constants import OpExpandDims, QNN_OP_PACKAGE_NAME_QTI_AISW
+from .qnn_constants import OpReshape, QNN_OP_PACKAGE_NAME_QTI_AISW
 
 
 @register_node_visitor
 class Unsqueeze(NodeVisitor):
-    target = "aten.unsqueeze_copy.default"
+    target = ["aten.unsqueeze_copy.default"]
 
     def __init__(self, *args) -> None:
         super().__init__(*args)
@@ -34,6 +33,7 @@ class Unsqueeze(NodeVisitor):
             input_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=True,
         )
 
         output_tensor = self.get_tensor(node, node)
@@ -42,22 +42,15 @@ class Unsqueeze(NodeVisitor):
             output_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=False,
         )
-
-        dim = cast(int, node.args[1])
 
         unsqueeze_op = PyQnnWrapper.PyQnnOpWrapper(
             node.name,
             QNN_OP_PACKAGE_NAME_QTI_AISW,
-            OpExpandDims.op_name,
+            OpReshape.op_name,
         )
         unsqueeze_op.AddInputTensors([input_tensor_wrapper])
         unsqueeze_op.AddOutputTensors([output_tensor_wrapper])
-
-        unsqueeze_op.AddScalarParam(
-            OpExpandDims.param_axis,
-            PyQnnWrapper.Qnn_DataType_t.QNN_DATATYPE_UINT_32,
-            {"data": np.uint32(dim)},
-        )
 
         return unsqueeze_op

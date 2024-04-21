@@ -8,8 +8,8 @@ from typing import Any
 
 from executorch.exir.capture import (
     _capture_legacy_do_not_use,
+    CallSpec,
     capture,
-    capture_multiple,
     CaptureConfig,
     EdgeCompileConfig,
     ExecutorchBackendConfig,
@@ -22,17 +22,11 @@ from executorch.exir.program import (
     ExecutorchProgram,
     ExecutorchProgramManager,
     ExirExportedProgram,
-    multi_method_program_to_executorch,
-    MultiMethodExecutorchProgram,
-    MultiMethodExirExportedProgram,
     to_edge,
 )
+from executorch.exir.serde.serialize import load, save
 from executorch.exir.tracer import ExirDynamoConfig
-from torch._export import (  # lots of people are doing from exir import CallSpec, ExportGraphSignature, ExportedProgram which seems wrong
-    CallSpec,
-    ExportedProgram,
-    ExportGraphSignature,
-)
+from torch.export import ExportedProgram, ExportGraphSignature
 
 Value = Any
 
@@ -40,7 +34,6 @@ __all__ = [
     "emit_program",
     "EmitterOutput",
     "capture",
-    "capture_multiple",
     "_capture_legacy_do_not_use",
     "CallSpec",
     "ExportedProgram",
@@ -52,12 +45,11 @@ __all__ = [
     "EdgeProgramManager",
     "ExecutorchProgramManager",
     "edge_to_executorch_passes",
-    "MultiMethodExirExportedProgram",
-    "MultiMethodExecutorchProgram",
     "CaptureConfig",
     "EdgeCompileConfig",
     "ExecutorchBackendConfig",
     "Value",
-    "multi_method_program_to_executorch",
     "ExirDynamoConfig",
+    "load",
+    "save",
 ]

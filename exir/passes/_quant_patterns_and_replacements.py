@@ -5,17 +5,17 @@
 # LICENSE file in the root directory of this source tree.
 
 import copy
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import torch
 from executorch.exir.dialects._ops import bind_pattern_to_op, ops as exir_ops
-
 from executorch.exir.passes.replace_aten_with_edge_pass import (
     aten_to_edge,
     should_lower_to_edge,
 )
 from torch import fx
 from torch.ao.quantization.fx._decomposed import quantized_decomposed_lib
+from torch.library import impl, impl_abstract
 
 
 __all__ = [
@@ -24,11 +24,285 @@ __all__ = [
 
 # TODO: extending an existing library that is defined in OSS might be a bit
 # confusing, we can investigate if it is possible to define a new library
+
 quantized_decomposed_lib.define(
-    "embedding_byte(Tensor weight, Tensor weight_scales, Tensor weight_zero_points, "
+    "embedding_byte(Tensor weight, Tensor weight_scales, Tensor? weight_zero_points, "
     "int weight_quant_min, int weight_quant_max, Tensor indices) -> Tensor",
 )
 
+quantized_decomposed_lib.define(
+    "embedding_byte.dtype(Tensor weight, Tensor weight_scales, Tensor? weight_zero_points, "
+    "int weight_quant_min, int weight_quant_max, Tensor indices, *, ScalarType? dtype=None) -> Tensor",
+)
+
+quantized_decomposed_lib.define(
+    "embedding_byte.out(Tensor weight, Tensor weight_scales, Tensor? weight_zero_points, "
+    "int weight_quant_min, int weight_quant_max, Tensor indices, *, Tensor(a!) out) -> Tensor(a!)",
+)
+
+quantized_decomposed_lib.define(
+    "embedding_byte.dtype_out(Tensor weight, Tensor weight_scales, Tensor? weight_zero_points, "
+    "int weight_quant_min, int weight_quant_max, Tensor indices, *, ScalarType? dtype=None, Tensor(a!) out) -> Tensor(a!)",
+)
+
+
+def embedding_weight_checks(weight, weight_scales, weight_zero_points):
+    assert weight.dtype in [
+        torch.int8,
+        torch.uint8,
+    ], f"Expecting weights to be of dtype in [torch.int8, torch.uint8], but got {weight.dtype}"
+    assert (
+        weight.dim() == 2
+    ), f"Expecting weight tensor to have dim()==2, but found {weight.dim()}"
+
+    assert weight_scales.dtype in [
+        torch.float16,
+        torch.float32,
+    ], f"Expecting weight_scales to be of dtype in [torch.float16, torch.float32], but got {weight_scales.dtype}"
+    assert (
+        weight_scales.dim() == 1 or weight_scales.dim() == 2
+    ), f"Expecting weight_scales tensor to have rank 1 or 2, but found {weight_scales.dim()}"
+    assert weight_scales.size(0) == weight.size(
+        0
+    ), f"Expecting weight and scale tensor to have same number of rows, but found {weight.size()} and {weight_scales.size()}"
+
+    assert (
+        weight_zero_points is None or weight_zero_points.dtype == weight_scales.dtype
+    ), "Expecting weight_zero_points to be None or have same dtype as weight_scales"
+    assert (
+        weight_zero_points is None or weight_zero_points.dim() == 1
+    ), f"Expecting weight_zero_points tensor to be None or have dim()==1, but found {weight_zero_points.dim()}"
+    assert weight_zero_points is None or weight_zero_points.size(0) == weight.size(
+        0
+    ), f"Expecting weight_zero_points tensor to be None or have same number of rows as weights, but found {weight.size()} and {weight_zero_points.size()}"
+
+
+@impl(quantized_decomposed_lib, "embedding_byte", "CompositeExplicitAutograd")
+def embedding_byte(
+    weight: torch.Tensor,
+    weight_scales: torch.Tensor,
+    weight_zero_points: Optional[torch.Tensor],
+    weight_quant_min: int,
+    weight_quant_max: int,
+    indices: torch.Tensor,
+) -> torch.Tensor:
+    embedding_weight_checks(weight, weight_scales, weight_zero_points)
+    group_size = weight.size(1) // (
+        weight_scales.size(1) if weight_scales.dim() == 2 else 1
+    )
+    weight = torch.ops.quantized_decomposed.dequantize_per_channel_group.default(
+        weight,
+        weight_scales,
+        weight_zero_points,
+        weight_quant_min,
+        weight_quant_max,
+        weight.dtype,
+        group_size,
+        weight_scales.dtype,
+    )
+    return torch.ops.aten.embedding.default(weight, indices)
+
+
+@impl_abstract("quantized_decomposed::embedding_byte.out")
+def embedding_byte_out_meta(
+    weight: torch.Tensor,
+    weight_scales: torch.Tensor,
+    weight_zero_points: Optional[torch.Tensor],
+    weight_quant_min: int,
+    weight_quant_max: int,
+    indices: torch.Tensor,
+    out: torch.Tensor,
+) -> torch.Tensor:
+    return embedding_byte(
+        weight,
+        weight_scales,
+        weight_zero_points,
+        weight_quant_min,
+        weight_quant_max,
+        indices,
+    )
+
+
+@impl(quantized_decomposed_lib, "embedding_byte.dtype", "CompositeExplicitAutograd")
+def embedding_byte_dtype(
+    weight: torch.Tensor,
+    weight_scales: torch.Tensor,
+    weight_zero_points: Optional[torch.Tensor],
+    weight_quant_min: int,
+    weight_quant_max: int,
+    indices: torch.Tensor,
+    dtype: Optional[torch.dtype],
+) -> torch.Tensor:
+    embedding_weight_checks(weight, weight_scales, weight_zero_points)
+    group_size = weight.size(1) // (
+        weight_scales.size(1) if weight_scales.dim() == 2 else 1
+    )
+    weight = torch.ops.quantized_decomposed.dequantize_per_channel_group.default(
+        weight,
+        weight_scales,
+        weight_zero_points,
+        weight_quant_min,
+        weight_quant_max,
+        weight.dtype,
+        group_size,
+        dtype,
+    )
+    return torch.ops.aten.embedding.default(weight, indices)
+
+
+@impl_abstract("quantized_decomposed::embedding_byte.dtype_out")
+def embedding_byte_dtype_out_meta(
+    weight: torch.Tensor,
+    weight_scales: torch.Tensor,
+    weight_zero_points: Optional[torch.Tensor],
+    weight_quant_min: int,
+    weight_quant_max: int,
+    indices: torch.Tensor,
+    dtype: Optional[torch.dtype],
+    out: torch.Tensor,
+) -> torch.Tensor:
+    return embedding_byte_dtype(
+        weight,
+        weight_scales,
+        weight_zero_points,
+        weight_quant_min,
+        weight_quant_max,
+        indices,
+        dtype,
+    )
+
+
+quantized_decomposed_lib.define(
+    "embedding_4bit(Tensor weight, Tensor weight_scales, Tensor? weight_zero_points, "
+    "int weight_quant_min, int weight_quant_max, Tensor indices) -> Tensor",
+)
+
+quantized_decomposed_lib.define(
+    "embedding_4bit.dtype(Tensor weight, Tensor weight_scales, Tensor? weight_zero_points, "
+    "int weight_quant_min, int weight_quant_max, Tensor indices, *, ScalarType? dtype=None) -> Tensor",
+)
+
+quantized_decomposed_lib.define(
+    "embedding_4bit.out(Tensor weight, Tensor weight_scales, Tensor? weight_zero_points, "
+    "int weight_quant_min, int weight_quant_max, Tensor indices, *, Tensor(a!) out) -> Tensor(a!)",
+)
+
+quantized_decomposed_lib.define(
+    "embedding_4bit.dtype_out(Tensor weight, Tensor weight_scales, Tensor? weight_zero_points, "
+    "int weight_quant_min, int weight_quant_max, Tensor indices, *, ScalarType? dtype=None, Tensor(a!) out) -> Tensor(a!)",
+)
+
+
+@impl(quantized_decomposed_lib, "embedding_4bit", "CompositeExplicitAutograd")
+def embedding_4bit(
+    weight: torch.Tensor,
+    weight_scales: torch.Tensor,
+    weight_zero_points: Optional[torch.Tensor],
+    weight_quant_min: int,
+    weight_quant_max: int,
+    indices: torch.Tensor,
+) -> torch.Tensor:
+    embedding_weight_checks(weight, weight_scales, weight_zero_points)
+    group_size = (2 * weight.size(1)) // (
+        weight_scales.size(1) if weight_scales.dim() == 2 else 1
+    )
+    weight_even = weight.div(16, rounding_mode="trunc")
+    weight_odd = weight.remainder(16)
+    weight_unpacked = torch.stack((weight_even, weight_odd), dim=-1)
+    weight = weight_unpacked.view(weight.shape[0], -1)
+    weight = weight.view(torch.int8).add(-8)
+
+    weight = torch.ops.quantized_decomposed.dequantize_per_channel_group.default(
+        weight,
+        weight_scales,
+        weight_zero_points,
+        weight_quant_min,
+        weight_quant_max,
+        weight.dtype,
+        group_size,
+        weight_scales.dtype,
+    )
+    return torch.ops.aten.embedding.default(weight, indices)
+
+
+@impl_abstract("quantized_decomposed::embedding_4bit.out")
+def embedding_4bit_out_meta(
+    weight: torch.Tensor,
+    weight_scales: torch.Tensor,
+    weight_zero_points: Optional[torch.Tensor],
+    weight_quant_min: int,
+    weight_quant_max: int,
+    indices: torch.Tensor,
+    out: torch.Tensor,
+) -> torch.Tensor:
+    return embedding_4bit(
+        weight,
+        weight_scales,
+        weight_zero_points,
+        weight_quant_min,
+        weight_quant_max,
+        indices,
+    )
+
+
+@impl(quantized_decomposed_lib, "embedding_4bit.dtype", "CompositeExplicitAutograd")
+def embedding_4bit_dtype(
+    weight: torch.Tensor,
+    weight_scales: torch.Tensor,
+    weight_zero_points: Optional[torch.Tensor],
+    weight_quant_min: int,
+    weight_quant_max: int,
+    indices: torch.Tensor,
+    dtype: Optional[torch.dtype],
+) -> torch.Tensor:
+    embedding_weight_checks(weight, weight_scales, weight_zero_points)
+    group_size = (2 * weight.size(1)) // (
+        weight_scales.size(1) if weight_scales.dim() == 2 else 1
+    )
+    weight_even = weight.div(16, rounding_mode="trunc")
+    weight_odd = weight.remainder(16)
+    weight_unpacked = torch.stack((weight_even, weight_odd), dim=-1)
+    weight = weight_unpacked.view(weight.shape[0], -1)
+    weight = weight.view(torch.int8).add(-8)
+
+    weight = torch.ops.quantized_decomposed.dequantize_per_channel_group.default(
+        weight,
+        weight_scales,
+        weight_zero_points,
+        weight_quant_min,
+        weight_quant_max,
+        weight.dtype,
+        group_size,
+        dtype,
+    )
+    return torch.ops.aten.embedding.default(weight, indices)
+
+
+@impl_abstract("quantized_decomposed::embedding_4bit.dtype_out")
+def embedding_4bit_dtype_out_meta(
+    weight: torch.Tensor,
+    weight_scales: torch.Tensor,
+    weight_zero_points: Optional[torch.Tensor],
+    weight_quant_min: int,
+    weight_quant_max: int,
+    indices: torch.Tensor,
+    dtype: Optional[torch.dtype],
+    out: torch.Tensor,
+) -> torch.Tensor:
+    return embedding_4bit_dtype(
+        weight,
+        weight_scales,
+        weight_zero_points,
+        weight_quant_min,
+        weight_quant_max,
+        indices,
+        dtype,
+    )
+
+
+quantized_decomposed_lib.define(
+    "mixed_mm(Tensor input, Tensor weight, Tensor weight_scales, Tensor? weight_zero_points) -> Tensor",
+)
 
 quantized_decomposed_lib.define(
     "add(Tensor a, float a_scale, int a_zero_point, int a_quant_min, int a_quant_max, Tensor b, float b_scale, int b_zero_point, int b_quant_min, int b_quant_max, float out_scale, int out_zero_point, int out_quant_min, int out_quant_max) -> Tensor qc"
@@ -333,9 +607,9 @@ def _get_binary_op_patterns_and_replacements(
     ]
 
 
-def _get_binary_ops_patterns_and_replacements() -> List[
-    Tuple[Callable, Callable, List[Callable]]
-]:
+def _get_binary_ops_patterns_and_replacements() -> (
+    List[Tuple[Callable, Callable, List[Callable]]]
+):
 
     # TODO: replace qbinary op with the ops implemented in lean mode
     binary_op_to_qbinary_ops = {
@@ -356,9 +630,9 @@ def _get_binary_ops_patterns_and_replacements() -> List[
     return pattern_and_replacements
 
 
-def _get_reshape_patterns_and_replacements() -> List[
-    Tuple[Callable, Callable, List[Callable]]
-]:
+def _get_reshape_patterns_and_replacements() -> (
+    List[Tuple[Callable, Callable, List[Callable]]]
+):
     def pattern(
         x,
         arg0,
@@ -409,9 +683,9 @@ def _get_reshape_patterns_and_replacements() -> List[
     ]
 
 
-def _get_slice_patterns_and_replacements() -> List[
-    Tuple[Callable, Callable, List[Callable]]
-]:
+def _get_slice_patterns_and_replacements() -> (
+    List[Tuple[Callable, Callable, List[Callable]]]
+):
     def pattern(x, dim, start, end, x_scale, x_zero_point, x_qmin, x_qmax):
         x = torch.ops.quantized_decomposed.dequantize_per_tensor.default(
             x, x_scale, x_zero_point, x_qmin, x_qmax, torch.uint8
@@ -435,9 +709,9 @@ def _get_slice_patterns_and_replacements() -> List[
     ]
 
 
-def _get_embedding_ops_patterns_and_replacements() -> List[
-    Tuple[Callable, Callable, List[Callable]]
-]:
+def _get_embedding_ops_patterns_and_replacements() -> (
+    List[Tuple[Callable, Callable, List[Callable]]]
+):
     def get_pattern_and_replacement():
         @bind_pattern_to_op(quantized_decomposed_lib, "embedding_byte")
         def pattern(
@@ -475,6 +749,50 @@ def _get_embedding_ops_patterns_and_replacements() -> List[
                 weight_quant_min,
                 weight_quant_max,
                 indicies,
+            )
+            return out
+
+        @bind_pattern_to_op(quantized_decomposed_lib, "embedding_byte")
+        def pattern_groupwise(
+            weight,
+            weight_scales,
+            weight_zero_points,
+            weight_quant_min,
+            weight_quant_max,
+            indices,
+            group_size,
+        ):
+            weight = (
+                torch.ops.quantized_decomposed.dequantize_per_channel_group.default(
+                    weight,
+                    weight_scales,
+                    weight_zero_points,
+                    weight_quant_min,
+                    weight_quant_max,
+                    weight.dtype,
+                    group_size,
+                    weight_scales.dtype,
+                )
+            )
+            out = torch.ops.aten.embedding.default(weight, indices)
+            return out
+
+        def replacement_groupwise(
+            weight,
+            weight_scales,
+            weight_zero_points,
+            weight_quant_min,
+            weight_quant_max,
+            indices,
+            group_size,
+        ):
+            out = torch.ops.quantized_decomposed.embedding_byte.default(
+                weight,
+                weight_scales,
+                weight_zero_points,
+                weight_quant_min,
+                weight_quant_max,
+                indices,
             )
             return out
 
@@ -519,6 +837,99 @@ def _get_embedding_ops_patterns_and_replacements() -> List[
             )
             return out
 
+        @bind_pattern_to_op(quantized_decomposed_lib, "embedding_byte")
+        def pattern_with_padding_idx_groupwise(
+            weight,
+            weight_scales,
+            weight_zero_points,
+            weight_quant_min,
+            weight_quant_max,
+            indices,
+            group_size,
+            padding_idx,
+        ):
+            weight = (
+                torch.ops.quantized_decomposed.dequantize_per_channel_group.default(
+                    weight,
+                    weight_scales,
+                    weight_zero_points,
+                    weight_quant_min,
+                    weight_quant_max,
+                    weight.dtype,
+                    group_size,
+                    weight_scales.dtype,
+                )
+            )
+            out = torch.ops.aten.embedding.default(weight, indices, padding_idx)
+            return out
+
+        def replacement_with_padding_idx_groupwise(
+            weight,
+            weight_scales,
+            weight_zero_points,
+            weight_quant_min,
+            weight_quant_max,
+            indices,
+            group_size,
+            _,  # padding_idx only matters for training and not when running op for inference
+        ):
+            out = torch.ops.quantized_decomposed.embedding_byte.default(
+                weight,
+                weight_scales,
+                weight_zero_points,
+                weight_quant_min,
+                weight_quant_max,
+                indices,
+            )
+            return out
+
+        @bind_pattern_to_op(quantized_decomposed_lib, "embedding_byte.dtype")
+        def pattern_with_dtype_groupwise(
+            weight,
+            weight_scales,
+            weight_zero_points,
+            weight_quant_min,
+            weight_quant_max,
+            indices,
+            group_size,
+            dtype,
+        ):
+            weight = (
+                torch.ops.quantized_decomposed.dequantize_per_channel_group.default(
+                    weight,
+                    weight_scales,
+                    weight_zero_points,
+                    weight_quant_min,
+                    weight_quant_max,
+                    weight.dtype,
+                    group_size,
+                    dtype,
+                )
+            )
+            out = torch.ops.aten.embedding.default(weight, indices)
+            return out
+
+        def replacement_with_dtype_groupwise(
+            weight,
+            weight_scales,
+            weight_zero_points,
+            weight_quant_min,
+            weight_quant_max,
+            indices,
+            group_size,
+            dtype,
+        ):
+            out = torch.ops.quantized_decomposed.embedding_byte.dtype(
+                weight,
+                weight_scales,
+                weight_zero_points,
+                weight_quant_min,
+                weight_quant_max,
+                indices,
+                dtype=dtype,
+            )
+            return out
+
         return [
             (
                 _trace_and_lower_to_edge_ops(pattern),
@@ -526,8 +937,23 @@ def _get_embedding_ops_patterns_and_replacements() -> List[
                 [],
             ),
             (
+                _trace_and_lower_to_edge_ops(pattern_groupwise),
+                _trace_and_lower_to_edge_ops(replacement_groupwise),
+                [],
+            ),
+            (
                 _trace_and_lower_to_edge_ops(pattern_with_padding_idx),
                 _trace_and_lower_to_edge_ops(replacement_with_padding_idx),
+                [],
+            ),
+            (
+                _trace_and_lower_to_edge_ops(pattern_with_padding_idx_groupwise),
+                _trace_and_lower_to_edge_ops(replacement_with_padding_idx_groupwise),
+                [],
+            ),
+            (
+                _trace_and_lower_to_edge_ops(pattern_with_dtype_groupwise),
+                _trace_and_lower_to_edge_ops(replacement_with_dtype_groupwise),
                 [],
             ),
         ]
@@ -565,9 +991,9 @@ n        return [(pattern, replacement, [])]
 """
 
 
-def get_quant_patterns_and_replacements() -> List[
-    Tuple[Callable, Callable, List[Callable]]
-]:
+def get_quant_patterns_and_replacements() -> (
+    List[Tuple[Callable, Callable, List[Callable]]]
+):
 
     return copy.copy(
         [

@@ -33,15 +33,16 @@ class TestAdd(unittest.TestCase):
     class AddConstant(torch.nn.Module):
         def __init__(self, constant):
             super().__init__()
-            self._constant = constant
+            self._constant1 = constant
+            self.register_buffer("_constant2", constant, persistent=False)
+            self.register_parameter("_constant3", torch.nn.Parameter(constant))
 
         def forward(self, x):
-            out1 = x + self._constant
-            out2 = x + self._constant + self._constant
+            out1 = x + self._constant1 + torch.ones(1, 1, 1)
+            out2 = x + self._constant2 + self._constant3
             return out1, out2
 
-    def test_fp32_add(self):
-        inputs = (torch.ones(1), torch.ones(1))
+    def _test_add(self, inputs):
         (
             Tester(self.Add(), inputs)
             .export()
@@ -53,18 +54,42 @@ class TestAdd(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_add_Tensor"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
+
+    def test_fp16_add(self):
+        inputs = (torch.ones(1).to(torch.float16), torch.ones(1).to(torch.float16))
+        self._test_add(inputs)
+
+    def test_fp32_add(self):
+        inputs = (torch.ones(1), torch.ones(1))
+        self._test_add(inputs)
 
     def test_fp32_add_constant(self):
         inputs = (torch.randn(4, 4, 4),)
         (
             Tester(self.AddConstant(torch.ones(4, 4, 4)), inputs)
             .export()
-            .check_count({"torch.ops.aten.add.Tensor": 3})
+            .check_count({"torch.ops.aten.add.Tensor": 4})
             .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 3})
+            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 4})
+            .partition()
+            .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
+            .check_not(["executorch_exir_dialects_edge__ops_aten_add_Tensor"])
+            .to_executorch()
+            .serialize()
+            .run_method_and_compare_outputs()
+        )
+
+    def test_qs8_add_constant(self):
+        inputs = (torch.randn(4, 4, 4),)
+        (
+            Tester(self.AddConstant(torch.ones(4, 4, 4)), inputs)
+            .quantize()
+            .export()
+            .check_count({"torch.ops.aten.add.Tensor": 4})
+            .to_edge()
+            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 4})
             .partition()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(["executorch_exir_dialects_edge__ops_aten_add_Tensor"])
@@ -94,8 +119,7 @@ class TestAdd(unittest.TestCase):
             )
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     def test_qs8_add2(self):
@@ -118,8 +142,7 @@ class TestAdd(unittest.TestCase):
             )
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     def test_qs8_add3(self):
@@ -142,8 +165,7 @@ class TestAdd(unittest.TestCase):
             )
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     class AddRelu(torch.nn.Module):
@@ -167,8 +189,7 @@ class TestAdd(unittest.TestCase):
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     def test_qs8_add_relu(self):
@@ -187,8 +208,7 @@ class TestAdd(unittest.TestCase):
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     def test_qs8_add_relu_seq(self):
@@ -234,6 +254,5 @@ class TestAdd(unittest.TestCase):
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )

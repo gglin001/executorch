@@ -34,9 +34,9 @@ from executorch.extension.pybindings.portable_lib import (  # @manual
     _load_for_executorch_from_buffer,
 )
 from executorch.extension.pytree import tree_flatten
+from executorch.sdk import BundledProgram
 
 from executorch.sdk.bundled_program.config import MethodTestCase, MethodTestSuite
-from executorch.sdk.bundled_program.core import create_bundled_program
 from executorch.sdk.bundled_program.serialize import (
     serialize_from_bundled_program_to_flatbuffer,
 )
@@ -118,7 +118,7 @@ def save_bundled_program(
     ]
 
     print("creating bundled program...")
-    bundled_program = create_bundled_program(executorch_program, method_test_suites)
+    bundled_program = BundledProgram(executorch_program, method_test_suites)
 
     print("serializing bundled program...")
     bundled_program_buffer = serialize_from_bundled_program_to_flatbuffer(
@@ -324,7 +324,7 @@ class TestXNNPACK(unittest.TestCase):
         quantization_config = get_symmetric_quantization_config()
         quantizer.set_global(quantization_config)
         prepared = prepare_pt2e(m, quantizer)
-        converted = convert_pt2e(prepared, fold_quantize=True)
+        converted = convert_pt2e(prepared)
 
         captured_program = exir.capture(
             converted,

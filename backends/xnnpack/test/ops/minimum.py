@@ -18,11 +18,7 @@ class TestMinimum(unittest.TestCase):
         def forward(self, x, y):
             return torch.minimum(x, y)
 
-    def test_fp32_minimum(self):
-        inputs = (
-            torch.randn(1, 3, 6),
-            torch.randn(1, 3, 6),
-        )
+    def _test_minimum(self, inputs):
         (
             Tester(self.Minimum(), inputs)
             .export()
@@ -34,6 +30,19 @@ class TestMinimum(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_minimum_default"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
+
+    def test_fp16_minimum(self):
+        inputs = (
+            torch.randn(1, 3, 6).to(torch.float16),
+            torch.randn(1, 3, 6).to(torch.float16),
+        )
+        self._test_minimum(inputs)
+
+    def test_fp32_minimum(self):
+        inputs = (
+            torch.randn(1, 3, 6),
+            torch.randn(1, 3, 6),
+        )
+        self._test_minimum(inputs)

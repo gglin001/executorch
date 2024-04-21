@@ -1,20 +1,26 @@
 import argparse
+import copy
 
 import torch
 from executorch.backends.qualcomm.partition.qnn_partitioner import QnnPartitioner
-from executorch.backends.qualcomm.qnn_quantizer import (
+from executorch.backends.qualcomm.quantizer.quantizer import (
     get_default_8bit_qnn_ptq_config,
     QnnQuantizer,
 )
+from executorch.backends.qualcomm.serialization.qnn_compile_spec_schema import (
+    QcomChipset,
+)
 from executorch.backends.qualcomm.utils.utils import (
     capture_program,
+    generate_htp_compiler_spec,
     generate_qnn_executorch_compiler_spec,
-    SoCModel,
 )
 from executorch.examples.models import MODEL_NAME_TO_MODEL
 from executorch.examples.models.model_factory import EagerModelFactory
 from executorch.examples.portable.utils import save_pte_program
 from executorch.exir.backend.backend_api import to_backend, validation_disabled
+from executorch.exir.capture._config import ExecutorchBackendConfig
+from executorch.sdk import generate_etrecord
 
 from torch.ao.quantization.quantize_pt2e import convert_pt2e, prepare_pt2e
 
@@ -25,6 +31,21 @@ if __name__ == "__main__":
         "--model_name",
         required=True,
         help=f"provide a model name. Valid ones: {list(MODEL_NAME_TO_MODEL.keys())}",
+    )
+    parser.add_argument(
+        "-g",
+        "--generate_etrecord",
+        action="store_true",
+        required=True,
+        help="Generate ETRecord metadata to link with runtime results (used for profiling)",
+    )
+
+    parser.add_argument(
+        "-f",
+        "--output_folder",
+        type=str,
+        default="",
+        help="The folder to store the exported program",
     )
 
     args = parser.parse_args()
@@ -55,13 +76,17 @@ if __name__ == "__main__":
     # Capture program for edge IR
     edge_program = capture_program(m, example_inputs)
 
+    # this is needed for the ETRecord as lowering modifies the graph in-place
+    edge_copy = copy.deepcopy(edge_program)
+
     # Delegate to QNN backend
+    backend_options = generate_htp_compiler_spec(
+        use_fp16=False,
+    )
     qnn_partitioner = QnnPartitioner(
         generate_qnn_executorch_compiler_spec(
-            is_fp16=False,
-            soc_model=SoCModel.SM8550,
-            debug=False,
-            saver=False,
+            soc_model=QcomChipset.SM8550,
+            backend_options=backend_options,
         )
     )
     with validation_disabled():
@@ -70,5 +95,12 @@ if __name__ == "__main__":
             edge_program.exported_program, qnn_partitioner
         )
 
-    executorch_program = delegated_program.to_executorch()
-    save_pte_program(executorch_program.buffer, args.model_name)
+    executorch_program = delegated_program.to_executorch(
+        config=ExecutorchBackendConfig(extract_constant_segment=False)
+    )
+
+    if args.generate_etrecord:
+        etrecord_path = args.output_folder + "etrecord.bin"
+        generate_etrecord(etrecord_path, edge_copy, executorch_program)
+
+    save_pte_program(executorch_program, args.model_name, args.output_folder)

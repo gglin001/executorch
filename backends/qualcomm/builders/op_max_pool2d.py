@@ -16,7 +16,7 @@ from .qnn_constants import OpPoolMax2d, QNN_OP_PACKAGE_NAME_QTI_AISW
 
 @register_node_visitor
 class MaxPool2d(NodeVisitor):
-    target = "aten.max_pool2d_with_indices.default"
+    target = ["aten.max_pool2d_with_indices.default"]
 
     def __init__(self, *args) -> None:
         super().__init__(*args)
@@ -33,6 +33,7 @@ class MaxPool2d(NodeVisitor):
             input_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=True,
         )
 
         users = list(node.users.keys())
@@ -51,6 +52,7 @@ class MaxPool2d(NodeVisitor):
             output_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=False,
         )
         # kernel info
         filter_size = cast(List[int], node.args[1])

@@ -27,9 +27,16 @@ class TestSliceCopy(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_slice_copy_Tensor"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
+
+    def test_fp16_slice_copy(self):
+        class SliceCopy(torch.nn.Module):
+            def forward(self, x):
+                return x[1:3, -2:, :-1]
+
+        inputs = (torch.randn(5, 5, 5).to(torch.float16),)
+        self._test_slice_copy(SliceCopy(), inputs, 3, 3)
 
     def test_fp32_slice_copy(self):
         class SliceCopy(torch.nn.Module):
@@ -135,6 +142,5 @@ class TestSliceCopy(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_slice_copy_Tensor"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )

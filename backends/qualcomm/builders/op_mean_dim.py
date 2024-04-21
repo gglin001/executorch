@@ -17,7 +17,7 @@ from .qnn_constants import OpReduceMean, QNN_OP_PACKAGE_NAME_QTI_AISW
 
 @register_node_visitor
 class MeanDim(NodeVisitor):
-    target = "aten.mean.dim"
+    target = ["aten.mean.dim"]
 
     def __init__(self, *args) -> None:
         super().__init__(*args)
@@ -34,6 +34,7 @@ class MeanDim(NodeVisitor):
             input_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=True,
         )
 
         # mean dims and keep dims
@@ -53,6 +54,7 @@ class MeanDim(NodeVisitor):
             output_tensor,
             PyQnnWrapper.Qnn_TensorType_t.QNN_TENSOR_TYPE_NATIVE,
             nodes_to_wrappers,
+            is_input_tensor=False,
         )
 
         reduce_mean_op = PyQnnWrapper.PyQnnOpWrapper(

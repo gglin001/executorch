@@ -144,7 +144,7 @@ void apply_on_flat_ix_with_dim_mask_and_base(
 // Helper Functions
 //
 
-void check_dim_list_is_valid(
+[[nodiscard]] bool check_dim_list_is_valid(
     const exec_aten::Tensor& in,
     const exec_aten::optional<exec_aten::ArrayRef<int64_t>>& dim_list);
 
@@ -306,7 +306,7 @@ void apply_over_dim_list(
     const size_t out_ix,
     const int64_t start = 0,
     const int64_t end = -1) {
-  check_dim_list_is_valid(in, dim_list);
+  ET_CHECK(check_dim_list_is_valid(in, dim_list));
   ET_CHECK_MSG(
       out_ix < get_out_numel(in, dim_list),
       "Out index %zd is out of bounds",
@@ -404,6 +404,10 @@ std::tuple<CTYPE_OUT, long> map_reduce_over_dim(
   CTYPE_OUT acc_val = map_fun(in_data[init_index]);
   long acc_ix = 0;
 
+  if (in.numel() == 1) {
+    return std::tuple<CTYPE_OUT, long>{acc_val, acc_ix};
+  }
+
   apply_over_dim(
       [&acc_val, &acc_ix, reduce_fun, map_fun, in_data](
           const size_t in_ix, const size_t dim_ix) {
@@ -455,7 +459,7 @@ CTYPE_OUT map_reduce_over_dim_list(
     const exec_aten::Tensor& in,
     const exec_aten::optional<exec_aten::ArrayRef<int64_t>>& dim_list,
     const size_t out_ix) {
-  check_dim_list_is_valid(in, dim_list);
+  ET_CHECK(check_dim_list_is_valid(in, dim_list));
 
   ET_CHECK_MSG(
       out_ix < get_out_numel(in, dim_list),
@@ -468,6 +472,10 @@ CTYPE_OUT map_reduce_over_dim_list(
 
   const CTYPE_IN* const in_data = in.const_data_ptr<CTYPE_IN>();
   CTYPE_OUT acc_val = map_fun(in_data[init_index]);
+
+  if (in.numel() == 1) {
+    return acc_val;
+  }
 
   apply_over_dim_list(
       [&acc_val, reduce_fun, map_fun, in_data](const size_t in_ix) {
@@ -608,7 +616,9 @@ bool check_reduction_args_single_dim(
     const Tensor& in,
     optional<int64_t> dim,
     bool keepdim,
-    Tensor& out);
+    optional<ScalarType> dtype,
+    Tensor& out,
+    bool allow_empty_dim = false);
 
 bool check_mean_dim_args(
     const Tensor& in,
@@ -635,6 +645,11 @@ bool check_min_max_args(
     bool keepdim,
     Tensor& max,
     Tensor& max_indices);
+
+bool check_prod_out_args(
+    const Tensor& in,
+    optional<ScalarType> dtype,
+    Tensor& out);
 
 #endif
 

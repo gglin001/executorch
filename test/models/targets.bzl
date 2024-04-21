@@ -23,7 +23,7 @@ def define_common_targets():
             ":linear_model",
             "//caffe2:torch",
             "//executorch/sdk/bundled_program:config",
-            "//executorch/sdk/bundled_program:core",
+            "//executorch/sdk:lib",
             "//executorch/sdk/bundled_program/serialize:lib",
             "//executorch/exir:lib",
             "//executorch/exir/_serialize:lib",
@@ -60,6 +60,7 @@ def define_common_targets():
     # Class names of nn.Modules for :exported_programs to export.
     MODULES_TO_EXPORT = [
         "ModuleAdd",
+        "ModuleAddHalf",
         "ModuleBasic",
         "ModuleLinear",
         "ModuleMultipleEntry",

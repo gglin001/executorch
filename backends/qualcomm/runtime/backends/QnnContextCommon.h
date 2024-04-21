@@ -33,7 +33,7 @@ class QnnContext {
   virtual ~QnnContext();
   Error Configure();
 
-  Qnn_ContextHandle_t GetHandle() {
+  Qnn_ContextHandle_t GetHandle() const {
     return handle_;
   }
 
@@ -47,7 +47,7 @@ class QnnContext {
   std::vector<Qnn_Tensor_t> GetGraphOutputs() {
     return cache_->GetGraphOutputs();
   }
-  QnnBackendCache::CacheState GetCacheState() {
+  QnnBackendCache::CacheState GetCacheState() const {
     return cache_->GetCacheState();
   };
 
@@ -56,6 +56,9 @@ class QnnContext {
 
  protected:
   virtual Error MakeConfig(std::vector<const QnnContext_Config_t*>& config) {
+    return Error::Ok;
+  };
+  virtual Error AfterConfigure() {
     return Error::Ok;
   };
 

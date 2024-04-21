@@ -30,19 +30,41 @@
 	url = https://github.com/Maratyszcza/FXdiv.git
 [submodule "backends/xnnpack/third-party/XNNPACK"]
 	path = backends/xnnpack/third-party/XNNPACK
-	url = https://github.com/google/XNNPACK.git
+	url = https://github.com/digantdesai/XNNPACK.git
 [submodule "backends/arm/third-party/serialization_lib"]
 	path = backends/arm/third-party/serialization_lib
 	url = https://review.mlplatform.org/tosa/serialization_lib
 [submodule "third-party/flatcc"]
 	path = third-party/flatcc
 	url = https://github.com/dvidelabs/flatcc.git
-[submodule "examples/third-party/llama"]
-	path = examples/third-party/llama
-	url = https://github.com/facebookresearch/llama.git
 [submodule "examples/third-party/fbjni"]
 	path = examples/third-party/fbjni
 	url = https://github.com/facebookincubator/fbjni.git
 [submodule "backends/arm/third-party/ethos-u-core-driver"]
 	path = backends/arm/third-party/ethos-u-core-driver
 	url = https://review.mlplatform.org/ml/ethos-u/ethos-u-core-driver
+[submodule "backends/vulkan/third-party/VulkanMemoryAllocator"]
+	path = backends/vulkan/third-party/VulkanMemoryAllocator
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+[submodule "backends/vulkan/third-party/volk"]
+	path = backends/vulkan/third-party/volk
+	url = https://github.com/zeux/volk
+[submodule "backends/vulkan/third-party/Vulkan-Headers"]
+	path = backends/vulkan/third-party/Vulkan-Headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers
+[submodule "third-party/lm-evaluation-harness"]
+	path = third-party/lm-evaluation-harness
+	url = https://github.com/EleutherAI/lm-evaluation-harness
+	branch = v0.4.1
+[submodule "kernels/optimized/third-party/eigen"]
+	path = kernels/optimized/third-party/eigen
+	url = https://gitlab.com/libeigen/eigen.git
+[submodule "examples/third-party/LLaVA"]
+	path = examples/third-party/LLaVA
+	url = https://github.com/haotian-liu/LLaVA.git
+[submodule "examples/models/llama2/third-party/re2"]
+	path = examples/models/llama2/third-party/re2
+	url = https://github.com/google/re2.git
+[submodule "examples/models/llama2/third-party/abseil-cpp"]
+	path = examples/models/llama2/third-party/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp.git

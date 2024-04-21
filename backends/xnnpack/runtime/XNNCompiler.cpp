@@ -7,7 +7,8 @@
  */
 
 #include <executorch/backends/xnnpack/runtime/XNNCompiler.h>
-#include <executorch/backends/xnnpack/schema_generated.h>
+#include <executorch/backends/xnnpack/runtime/XNNHeader.h>
+#include <executorch/backends/xnnpack/serialization/schema_generated.h>
 #include <executorch/backends/xnnpack/threadpool/threadpool.h>
 #include <executorch/runtime/core/exec_aten/util/scalar_type_util.h>
 #include <unordered_map>
@@ -68,6 +69,12 @@ xnn_datatype getDataType(const DataType& data_type) {
       return xnn_datatype::xnn_datatype_qcint8;
     case DataType::xnn_datatype_qcint32:
       return xnn_datatype::xnn_datatype_qcint32;
+    case DataType::xnn_datatype_qcint4:
+      return xnn_datatype::xnn_datatype_qcint4;
+    case DataType::xnn_datatype_qdint8:
+      return xnn_datatype::xnn_datatype_qdint8;
+    case DataType::xnn_datatype_qbint4:
+      return xnn_datatype::xnn_datatype_qbint4;
     default:
       return xnn_datatype::xnn_datatype_invalid;
   }
@@ -80,6 +87,8 @@ bool isQuantizedDataType(const xnn_datatype data_type) {
     case xnn_datatype::xnn_datatype_qint32:
     case xnn_datatype::xnn_datatype_qcint8:
     case xnn_datatype::xnn_datatype_qcint32:
+    case xnn_datatype::xnn_datatype_qcint4:
+    case xnn_datatype::xnn_datatype_qdint8:
       return true;
     default:
       return false;
@@ -104,6 +113,34 @@ std::vector<T> flatbufferDimsToVector(
 }
 
 /**
+Gets the constant data pointer associated with the given tensor value.
+Obtaining the constant data pointer can either be from within the flatbuffer
+payload (deprecated) or via offsets to the constant_data_ptr. If no constant
+data associated with the tensor value, then returns nullptr.
+*/
+const uint8_t* getConstantDataPtr(
+    const fb_xnnpack::XNNTensorValue* tensor_value,
+    GraphPtr flatbuffer_graph,
+    const uint8_t* constant_data_ptr) {
+  auto buffer_idx = tensor_value->constant_buffer_idx();
+  if (buffer_idx) {
+    if (!constant_data_ptr) {
+      // TODO(T172265611): Remove constant_buffer in flatbuffer path after BC
+      // window
+      const auto& constant_buffer = *flatbuffer_graph->constant_buffer();
+      return constant_buffer[buffer_idx]->storage()->data();
+    } else {
+      const auto& constant_data_offsets = *flatbuffer_graph->constant_data();
+      uint64_t constant_data_offset =
+          constant_data_offsets[buffer_idx]->offset();
+      return constant_data_ptr + constant_data_offset;
+    }
+  }
+
+  return nullptr;
+}
+
+/**
 Define serialized tensor value into
 the subgraph. While also keeping track of the remapped ids from
 the serialized id to the newly generated id.
@@ -113,8 +150,9 @@ Error defineTensor(
     std::unordered_map<uint32_t, uint32_t>& remapped_ids,
     ValuePtr value,
     GraphPtr flatbuffer_graph,
-    XNNExecutor* executor,
-    MemoryAllocator* runtime_allocator) {
+    const uint8_t* constant_data_ptr,
+    std::vector<uint32_t>& input_ids,
+    std::vector<uint32_t>& output_ids) {
   const fb_xnnpack::XNNTensorValue* tensor_value = nullptr;
   const fb_xnnpack::XNNQuantizedTensorValue* qtensor_value = nullptr;
 
@@ -151,11 +189,9 @@ Error defineTensor(
 
   // Get Pointer to constant data from flatbuffer, if its non-constant
   // it is a nullptr
-  const auto& constant_buffer = *flatbuffer_graph->constant_buffer();
-  auto buffer_idx = tensor_value->constant_buffer_idx();
-  const auto buffer_ptr = buffer_idx == 0
-      ? nullptr
-      : constant_buffer[buffer_idx]->storage()->data();
+  const uint8_t* buffer_ptr =
+      getConstantDataPtr(tensor_value, flatbuffer_graph, constant_data_ptr);
+
   xnn_status status;
   // The type we might have to convert to
   auto dq_datatype = getDataType(tensor_value->dq_datatype());
@@ -219,29 +255,30 @@ Error defineTensor(
               /*subgraph=*/subgraph_ptr,
               /*datatype=*/xnn_datatype_qdint8,
               /*num_dims=*/tensor_value->num_dims(),
-              /*num_nonbatch_dims=*/dims_data.size(), // = per tensor dq
+              /*num_nonbatch_dims=*/1, // always do per token quantization
               /*dims=*/dims_data.data(),
               /*external_id=*/XNN_INVALID_VALUE_ID, // always internal value id
               /*flags=*/0, // this is netiher external input or output
               /*id_out=*/&id);
 
-          // this is the FP32 external value that is dynamically quantized
-          uint32_t fp32_id;
+          // this is the FP16 or FP32 external value that is being dynamically
+          // quantized
+          uint32_t float_id;
+          enum xnn_datatype fp_datatype = getDataType(tensor_value->datatype());
           status = xnn_define_tensor_value(
               /*subgraph=*/subgraph_ptr,
-              /*datatype=*/xnn_datatype_fp32, // always fp32
+              /*datatype=*/fp_datatype,
               /*num_dims=*/tensor_value->num_dims(),
               /*dims=*/dims_data.data(),
               /*data=*/buffer_ptr,
               /*external_id=*/tensor_value->external_id(),
               /*flags=*/tensor_value->flags(),
-              /*id_out=*/&fp32_id);
-          executor->addDynamicQinput(fp32_id);
+              /*id_out=*/&float_id);
 
-          // Define dynamic conversion from fp32 to qdint8
+          // Define dynamic conversion from float to qdint8
           status = xnn_define_convert(
               /*subgraph=*/subgraph_ptr,
-              /*input_id=*/fp32_id,
+              /*input_id=*/float_id,
               /*output_id=*/id,
               /*flags=*/0);
           break;
@@ -282,20 +319,101 @@ Error defineTensor(
       }
       case fb_xnnpack::XNNQuantParams::PerChannelQuant: {
         auto qparams = qtensor_value->quant_params_as_PerChannelQuant();
+        enum xnn_datatype dtype = getDataType(tensor_value->datatype());
+        int32_t zero_point =
+            (dtype == xnn_datatype::xnn_datatype_qcint4 ? 8 : 0);
+
         ET_LOG(
             Debug,
-            "define quant tensor (per channel): buffer_ptr: %p, scale.numel(): %u, channel_dim: %u\n",
+            "define quant tensor (per channel): buffer_ptr: %p, scale.numel(): %u, channel_dim: %u, dtype: %u, zero_point: %d\n",
             buffer_ptr,
             qparams->scale()->size(),
-            qparams->channel_dim());
-        status = xnn_define_channelwise_quantized_tensor_value(
+            qparams->channel_dim(),
+            dtype,
+            zero_point);
+        status = xnn_define_channelwise_quantized_tensor_value_v2(
             /*subgraph=*/subgraph_ptr,
-            /*datatype=*/getDataType(tensor_value->datatype()),
+            /*datatype=*/dtype,
+            /*zero_point=*/zero_point,
             /*scale=*/qparams->scale()->data(),
             /*num_dims=*/tensor_value->num_dims(),
             /*channel_dim*/ qparams->channel_dim(),
             /*dims=*/dims_data.data(),
             /*data=*/buffer_ptr,
+            /*external_id=*/tensor_value->external_id(),
+            /*flags=*/tensor_value->flags(),
+            /*id_out=*/&id);
+        break;
+      }
+      case fb_xnnpack::XNNQuantParams::PerChannelGroupQuant: {
+        xnn_datatype datatype = getDataType(tensor_value->datatype());
+        ET_CHECK_OR_RETURN_ERROR(
+            datatype == xnn_datatype::xnn_datatype_qbint4,
+            Internal,
+            "Unsupported datatype for per channel group quantization: %d",
+            datatype);
+        auto qparams = qtensor_value->quant_params_as_PerChannelGroupQuant();
+        size_t group_size = qparams->group_size();
+        size_t output_channels = tensor_value->dims()->Get(0);
+        size_t input_channels = tensor_value->dims()->Get(1);
+        ET_CHECK_OR_RETURN_ERROR(
+            qparams->scale()->size() ==
+                output_channels * input_channels / group_size,
+            Internal,
+            "scale size %zu != output channels %zu * group size %zu",
+            (size_t)qparams->scale()->size(),
+            output_channels,
+            group_size);
+        int32_t zero_point =
+            (datatype == xnn_datatype::xnn_datatype_qbint4 ? 8 : 0);
+        ET_LOG(
+            Debug,
+            "define quant tensor (per channel group): buffer_ptr: %p, scale.numel(): %u, channel_dim: %u, grpup_size: %zu, output_channels: %zu, dtype: %u, zero_point: %d, datatype: %d\n",
+            buffer_ptr,
+            qparams->scale()->size(),
+            qparams->channel_dim(),
+            group_size,
+            output_channels,
+            datatype,
+            zero_point,
+            datatype);
+        status = xnn_define_blockwise_quantized_tensor_value(
+            /*subgraph=*/subgraph_ptr,
+            /*datatype=*/datatype,
+            /*zero_point=*/zero_point,
+            /*scale=*/qparams->scale()->data(),
+            /*num_dims=*/tensor_value->num_dims(),
+            /*channel_dim=*/qparams->channel_dim(),
+            /*block_size=*/qparams->group_size(),
+            /*dims=*/dims_data.data(),
+            /*data=*/buffer_ptr,
+            /*external_id=*/tensor_value->external_id(),
+            /*flags=*/tensor_value->flags(),
+            /*id_out=*/&id);
+        break;
+      }
+      case fb_xnnpack::XNNQuantParams::PerTokenDynamicQuant: {
+        auto qparams = qtensor_value->quant_params_as_PerTokenDynamicQuant();
+        ET_LOG(
+            Debug,
+            "define quant tensor (dynamic): num_dims: %i, num_nonbatch_dims: %i\n",
+            tensor_value->num_dims(),
+            qparams->num_nonbatch_dims());
+        ET_CHECK_OR_RETURN_ERROR(
+            buffer_ptr == nullptr,
+            Internal,
+            "Dynamically quantized tensor should not have constant data but found non-nullptr");
+        // TODO(T179441835): Dynamic Quantization with num_nonbatch_dims > 1
+        ET_CHECK_OR_RETURN_ERROR(
+            qparams->num_nonbatch_dims() == 1,
+            Internal,
+            "Dynamically Quantized Tensors currently only support per token quantization");
+        status = xnn_define_dynamically_quantized_tensor_value(
+            /*subgraph=*/subgraph_ptr,
+            /*datatype=*/getDataType(tensor_value->datatype()),
+            /*num_dims=*/tensor_value->num_dims(),
+            /*num_nonbatch_dims*/ qparams->num_nonbatch_dims(),
+            /*dims=*/dims_data.data(),
             /*external_id=*/tensor_value->external_id(),
             /*flags=*/tensor_value->flags(),
             /*id_out=*/&id);
@@ -321,10 +439,13 @@ Error defineTensor(
 
   // map serialized id to newly generated id
   remapped_ids.emplace(std::make_pair(tensor_value->id_out(), id));
-  // Append this external id to the arg list for execute(*args) to extract from
-  // as args[external_id]
-  if (tensor_value->external_id() != XNN_INVALID_VALUE_ID) {
-    executor->append_arg(tensor_value->external_id());
+
+  // Add external ids to either list of input or output ids
+  if (tensor_value->flags() & XNN_VALUE_FLAG_EXTERNAL_INPUT) {
+    input_ids.push_back(tensor_value->external_id());
+  }
+  if (tensor_value->flags() & XNN_VALUE_FLAG_EXTERNAL_OUTPUT) {
+    output_ids.push_back(tensor_value->external_id());
   }
 
   return Error::Ok;
@@ -1352,6 +1473,38 @@ Error defineStaticSliceNode(
 }
 
 /*
+Defines Scaled Dot Product Attention (SDPA) node into the subgraph,
+using the remapped ids to map the serialized ids,
+to the new ids generated when defining the tensor value
+*/
+Error defineScaledDotProductAttentionNode(
+    xnn_subgraph_t subgraph_ptr,
+    const std::unordered_map<uint32_t, uint32_t>& remapped_ids,
+    const NodePtr node) noexcept {
+  auto graph_node = node->xnode_union_as_XNNScaledDotProductAttention();
+
+  xnn_status status = xnn_define_scaled_dot_product_attention(
+      subgraph_ptr,
+      xnn_attention_logits_cap_type_none, // cap_type
+      nullptr, // cap_value - not used
+      remapped_ids.at(graph_node->query_id()),
+      remapped_ids.at(graph_node->key_id()),
+      remapped_ids.at(graph_node->value_id()),
+      remapped_ids.at(graph_node->scale_id()),
+      remapped_ids.at(graph_node->mask_id()),
+      remapped_ids.at(graph_node->output_id()),
+      graph_node->flags());
+
+  ET_CHECK_OR_RETURN_ERROR(
+      status == xnn_status_success,
+      Internal,
+      "Failed to create SDPA node %i with code: %s",
+      node->debug_handle(),
+      xnn_status_to_string(status));
+
+  return Error::Ok;
+}
+/*
 Returns not Implemented Error code. This function is meant to be
 called when the compiler encountes a XNodeType from the flatbuffer
 that has not yet been implemented
@@ -1412,6 +1565,7 @@ DefineNodeFunc getDefineNodeFunc(fb_xnnpack::XNodeUnion nodeType) {
     _DEFINE(Concatenate3)
     _DEFINE(Concatenate4)
     _DEFINE(StaticSlice)
+    _DEFINE(ScaledDotProductAttention)
     case fb_xnnpack::XNodeUnion::NONE:
     default: // Adding here as a catch all, just in case
       return &defineNotImplementedNode;
@@ -1429,14 +1583,36 @@ __ET_NODISCARD Error XNNCompiler::compileModel(
     size_t num_bytes,
     XNNExecutor* executor,
     MemoryAllocator* runtime_allocator) {
-  ET_CHECK_OR_RETURN_ERROR(
-      fb_xnnpack::XNNGraphBufferHasIdentifier(buffer_pointer),
-      DelegateInvalidCompatibility,
-      "XNNPACK Delegate Serialization Format version identifier '%.4s' != expected '%.4s'",
-      flatbuffers::GetBufferIdentifier(buffer_pointer),
-      fb_xnnpack::XNNGraphIdentifier());
+  Result<XNNHeader> header = XNNHeader::Parse(buffer_pointer, num_bytes);
+  const uint8_t* flatbuffer_data = nullptr;
+  const uint8_t* constant_data = nullptr;
 
-  auto flatbuffer_graph = fb_xnnpack::GetXNNGraph(buffer_pointer);
+  // Header status can only either be Error::Ok or Error::NotFound
+  if (header.ok()) {
+    flatbuffer_data = reinterpret_cast<const uint8_t*>(buffer_pointer) +
+        header->flatbuffer_offset;
+    constant_data = reinterpret_cast<const uint8_t*>(buffer_pointer) +
+        header->constant_data_offset;
+  } else if (header.error() == Error::NotFound) {
+    flatbuffer_data = reinterpret_cast<const uint8_t*>(buffer_pointer);
+  } else {
+    ET_LOG(Error, "XNNHeader may be corrupt");
+    return header.error();
+  }
+
+  // Temporarily support identifier XN00 and XN01
+  bool is_supported_version =
+      strncmp(flatbuffers::GetBufferIdentifier(flatbuffer_data), "XN00", 4) ==
+          0 ||
+      strncmp(flatbuffers::GetBufferIdentifier(flatbuffer_data), "XN01", 4) ==
+          0;
+  ET_CHECK_OR_RETURN_ERROR(
+      is_supported_version,
+      DelegateInvalidCompatibility,
+      "XNNPACK Delegate Serialization Format version identifier '%.4s' != expected XN00 or XN01'",
+      flatbuffers::GetBufferIdentifier(flatbuffer_data));
+
+  auto flatbuffer_graph = fb_xnnpack::GetXNNGraph(flatbuffer_data);
   // initialize xnnpack
   xnn_status status = xnn_initialize(/*allocator =*/nullptr);
   ET_CHECK_OR_RETURN_ERROR(
@@ -1469,6 +1645,9 @@ __ET_NODISCARD Error XNNCompiler::compileModel(
   // Invalid ids do not need to be remapped
   remapped_ids.emplace(XNN_INVALID_VALUE_ID, XNN_INVALID_VALUE_ID);
 
+  // External Ids for inputs and outputs
+  std::vector<uint32_t> input_ids;
+  std::vector<uint32_t> output_ids;
   Error err = Error::Ok;
   for (auto value : *flatbuffer_graph->xvalues()) {
     err = defineTensor(
@@ -1476,8 +1655,9 @@ __ET_NODISCARD Error XNNCompiler::compileModel(
         remapped_ids,
         value,
         flatbuffer_graph,
-        executor,
-        runtime_allocator);
+        constant_data,
+        input_ids,
+        output_ids);
 
     if (err != Error::Ok) {
       return err;
@@ -1493,7 +1673,7 @@ __ET_NODISCARD Error XNNCompiler::compileModel(
   }
   uint32_t runtime_flags = 0;
 
-#ifdef ENABLE_XNNPACK_PROFILING
+#if defined(ENABLE_XNNPACK_PROFILING) || defined(ET_EVENT_TRACER_ENABLED)
   runtime_flags |= XNN_FLAG_BASIC_PROFILING;
 #endif
 
@@ -1509,51 +1689,10 @@ __ET_NODISCARD Error XNNCompiler::compileModel(
       "XNN Runtime creation failed with code: %s",
       xnn_status_to_string(status));
 
-  executor->runtime_ =
-      std::unique_ptr<xnn_runtime, decltype(&xnn_delete_runtime)>(
-          runtime_ptr, xnn_delete_runtime);
-
-#ifdef ENABLE_XNNPACK_PROFILING
-  executor->init_profiler();
-#endif
-  // HACK FOR FC/BC this is only to support old dq_datatype
-  if (executor->qinputs_.size() > 0) {
-    // qinputs_ is only set when using the old dq linear path. At which point
-    // We need to overide the input_ids_ This workse based off the assumption
-    // old dqlinear path will be single node single input delegate
-    for (uint32_t id : executor->qinputs_) {
-      executor->input_ids_.emplace_back(id);
-    }
-  } else {
-    for (auto old_id : *flatbuffer_graph->input_ids()) {
-      executor->input_ids_.emplace_back(remapped_ids.at(old_id));
-    }
-  }
-  // External ids need to be in order for wiring with args
-  std::sort(executor->input_ids_.begin(), executor->input_ids_.end());
-
-  for (auto old_id : *flatbuffer_graph->output_ids()) {
-    executor->output_ids_.emplace_back(remapped_ids.at(old_id));
-  }
-  // External ids need to be in order for wiring with args
-  std::sort(executor->output_ids_.begin(), executor->output_ids_.end());
-
-  if (!executor->qinputs_.empty() && flatbuffer_graph->xnodes()->size() > 0 &&
-      flatbuffer_graph->xnodes()->Get(0)->xnode_union_type() ==
-          fb_xnnpack::XNodeUnion::XNNFullyConnected) {
-#ifdef ENABLE_DYNAMIC_QUANTIZATION
-    // This delegate is for DQLinear which supports dynamic input shapes
-    if (executor->getNumInputs() < 1 || executor->getNumOutputs() != 1) {
-      ET_LOG(
-          Error,
-          "DQLinear should have at least one input and exactly one output");
-      return Error::NotSupported;
-    }
-#else
-    ET_LOG(Error, "DQ Linear is not supported");
-    return Error::NotSupported;
-#endif
-  }
+  err = executor->initialize( // NOLINT: runtime_ptr is non-null
+      runtime_ptr,
+      std::move(input_ids),
+      std::move(output_ids));
 
   return err;
 };

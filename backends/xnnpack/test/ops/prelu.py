@@ -20,11 +20,9 @@ class TestPrelu(unittest.TestCase):
             a = self.prelu(x)
             return a
 
-    @unittest.skip("T158653285 - Missing recomposition for PReLU")
-    def test_fp32_prelu(self):
-        inputs = (torch.randn(1, 5, 3, 2),)
+    def _test_prelu(self, module, inputs):
         (
-            Tester(self.PReLU(), inputs)
+            Tester(module, inputs)
             .export()
             .check_count({"torch.ops.aten._prelu_kernel.default": 1})
             .to_edge()
@@ -38,6 +36,17 @@ class TestPrelu(unittest.TestCase):
             )
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
+
+    @unittest.skip("T158653285 - Missing recomposition for PReLU")
+    def test_fp16_prelu(self):
+        module = self.PReLU().to(torch.float16)
+        inputs = (torch.randn(1, 5, 3, 2).to(torch.float16),)
+        self._test_prelu(module, inputs)
+
+    @unittest.skip("T158653285 - Missing recomposition for PReLU")
+    def test_fp32_prelu(self):
+        module = self.PReLU()
+        inputs = (torch.randn(1, 5, 3, 2),)
+        self._test_prelu(module, inputs)

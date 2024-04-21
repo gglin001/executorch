@@ -13,6 +13,8 @@ from executorch.exir.dialects._ops import ops as exir_ops
 from executorch.exir.pass_base import ExportPass, PassResult
 from executorch.exir.sym_util import eval_shape
 
+from .utils import dq_ops, q_ops
+
 
 class LayoutTransform(ExportPass):
     """
@@ -44,11 +46,17 @@ class LayoutTransform(ExportPass):
         exir_ops.edge.aten.sub.Tensor,
         exir_ops.edge.aten.div.Tensor,
         exir_ops.edge.aten.ceil.default,
-        exir_ops.edge.aten._softmax.default,
+        exir_ops.edge.aten._softmax.default,  # TODO: Need to find a new solution to do "axis_order" to transform axis.
+        exir_ops.edge.aten._log_softmax.default,
         exir_ops.edge.aten.constant_pad_nd.default,
         exir_ops.edge.aten.bmm.default,
         exir_ops.edge.aten.full.default,
-        exir_ops.edge.aten.embedding.default,
+        exir_ops.edge.aten.gelu.default,
+        exir_ops.edge.aten.sqrt.default,
+        exir_ops.edge.aten.sum.dim_IntList,
+        exir_ops.edge.aten.pow.Tensor_Scalar,
+        *q_ops,
+        *dq_ops,
         _operator.getitem,
     }
 
@@ -61,14 +69,6 @@ class LayoutTransform(ExportPass):
         3: ("NCW", "NWC"),
         4: ("NCHW", "NHWC"),
         5: ("NCDHW", "NDHWC"),
-    }
-
-    q_ops = {
-        torch.ops.quantized_decomposed.quantize_per_channel.default,
-        torch.ops.quantized_decomposed.quantize_per_tensor.default,
-        exir_ops.edge.quantized_decomposed.quantize_per_channel.default,
-        exir_ops.edge.quantized_decomposed.quantize_per_tensor.default,
-        exir_ops.edge.quantized_decomposed.quantize_per_tensor.tensor,
     }
 
     @classmethod
@@ -84,6 +84,7 @@ class LayoutTransform(ExportPass):
         super(LayoutTransform, self).__init__()
         self.edge_program = edge_program
         self.insert_permute = insert_permute
+        self.qdq_opset = {*q_ops, *dq_ops}
 
     def mark_as_transformed(self, node: torch.fx.Node) -> None:
         if isinstance(node.meta["val"], (tuple, list)):
@@ -111,10 +112,15 @@ class LayoutTransform(ExportPass):
         return node.target in self.layout_sensitive_ops
 
     def is_layout_agnostic(self, node: torch.fx.Node) -> bool:
-        if node.target == exir_ops.edge.aten.mean.dim:
+        if node.target in [
+            exir_ops.edge.aten.mean.dim,
+            exir_ops.edge.aten.sum.dim_IntList,
+        ]:
             # if dimemsion is not kept, we'll have no clue how to do layout transform
             if len(node.args) < 3 or not node.args[2]:
                 return False
+        if node.target in self.qdq_opset:
+            return "requantize" in node.meta
         return node.target in self.layout_agnostic_ops
 
     def is_edge_condition(self, node):
