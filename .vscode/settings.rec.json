@@ -7,6 +7,16 @@
         "EXT_PATH": "${workspaceFolder}/cmake-out:${workspaceFolder}/third-party/flatbuffers/cmake-out:${workspaceFolder}/_demos/bin",
         "EXT_PYTHONPATH": "${workspaceFolder}",
     },
+    "search.exclude": {
+        "**/cmake-out": true,
+        "**/buck-out": true,
+        "**/third-party": true
+    },
+    "files.watcherExclude": {
+        "**/cmake-out": true,
+        "**/buck-out": true,
+        "**/third-party": true
+    },
     "cmake.useCMakePresets": "always",
     "clangd.arguments": [
         // "-log=verbose",
@@ -22,9 +32,4 @@
     "python.analysis.exclude": [
         "${workspaceFolder}",
     ],
-    "search.exclude": {
-        "**/cmake-out": true,
-        "**/buck-out": true,
-        "**/third-party": true
-    }
 }
