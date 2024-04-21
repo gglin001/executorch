@@ -1,3 +1,7 @@
+###############################################################################
+
+# old config
+
 # https://pytorch.org/executorch/stable/getting-started-setup.html
 # https://pytorch.org/executorch/stable/runtime-build-and-cross-compilation.html
 
@@ -72,3 +76,5 @@ buck2 run //examples/portable/executor_runner:executor_runner -- --model_path ad
 
 buck2 run examples/portable/executor_runner:executor_runner -- --model_path ./mv2.pte
 buck2 run --config build.type=debug examples/portable/executor_runner:executor_runner -- --model_path add.pte
+
+###############################################################################

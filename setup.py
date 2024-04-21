@@ -489,5 +489,5 @@ setup(
         "build_ext": InstallerBuildExt,
         "build_py": CustomBuildPy,
     },
-    ext_modules=get_ext_modules(),
+    # ext_modules=get_ext_modules(),
 )
