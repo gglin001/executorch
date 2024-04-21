@@ -35,4 +35,4 @@ __pycache__/
 
 core
 executorch
-.vscode/settings.json
+.vscode/
