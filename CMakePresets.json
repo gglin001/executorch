@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "configurePresets": [
+    {
+      "name": "minimum",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-out",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/cmake-out/install",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "CMAKE_C_COMPILER": "/usr/bin/clang",
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+        "CMAKE_INSTALL_RPATH_USE_LINK_PATH": true,
+        "BUCK2": "${sourceDir}/_demos/bin/buck2",
+        "EXECUTORCH_ENABLE_LOGGING": true,
+        "ET_MIN_LOG_LEVEL": "Debug",
+        "EXECUTORCH_BUILD_PTHREADPOOL": false,
+        "EXECUTORCH_BUILD_CUSTOM": false,
+        "EXECUTORCH_BUILD_CUSTOM_OPS_AOT": false,
+        "EXECUTORCH_BUILD_PYBIND": false
+      }
+    },
+    {
+      "name": "llama",
+      "inherits": "minimum",
+      "cacheVariables": {
+        "EXECUTORCH_BUILD_PTHREADPOOL": true,
+        "EXECUTORCH_BUILD_CUSTOM": true,
+        "EXECUTORCH_BUILD_CUSTOM_OPS_AOT": true,
+        // "EXECUTORCH_BUILD_PYBIND": true,
+        // // ln -s $CONDA_PREFIX _demos/CONDA_PREFIX
+        // "TORCH_PYTHON_LIBRARY": "${sourceDir}/_demos/CONDA_PREFIX/lib/python3.1/site-packages/torch/lib/libtorch_python.dylib"
+        "EXECUTORCH_BUILD_PYBIND": false
+      }
+    }
+  ]
+}

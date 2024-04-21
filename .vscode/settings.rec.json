@@ -7,21 +7,7 @@
         "EXT_PATH": "${workspaceFolder}/cmake-out:${workspaceFolder}/third-party/flatbuffers/cmake-out:${workspaceFolder}/_demos/bin",
         "EXT_PYTHONPATH": "${workspaceFolder}",
     },
-    "cmake.configureSettings": {
-        "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install",
-        "CMAKE_INSTALL_RPATH_USE_LINK_PATH": true,
-        "BUCK2": "${workspaceFolder}/_demos/bin/buck2",
-        "EXECUTORCH_ENABLE_LOGGING": true,
-        "ET_MIN_LOG_LEVEL": "Debug",
-        "EXECUTORCH_BUILD_PTHREADPOOL": false,
-        "EXECUTORCH_BUILD_CUSTOM": false,
-        "EXECUTORCH_BUILD_CUSTOM_OPS_AOT": false,
-        "EXECUTORCH_BUILD_PYBIND": false,
-        // "EXECUTORCH_BUILD_PYBIND": true,
-        // ln -s $CONDA_PREFIX _demos/CONDA_PREFIX
-        // "TORCH_PYTHON_LIBRARY": "${workspaceFolder}/_demos/CONDA_PREFIX/lib/python3.1/site-packages/torch/lib/libtorch_python.dylib",
-    },
-    "cmake.buildDirectory": "${workspaceFolder}/cmake-out",
+    "cmake.useCMakePresets": "always",
     "clangd.arguments": [
         // "-log=verbose",
         "-pretty",
@@ -36,4 +22,9 @@
     "python.analysis.exclude": [
         "${workspaceFolder}",
     ],
+    "search.exclude": {
+        "**/cmake-out": true,
+        "**/buck-out": true,
+        "**/third-party": true
+    }
 }

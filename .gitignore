@@ -36,3 +36,4 @@ __pycache__/
 core
 executorch
 .vscode/
+CMakeUserPresets.json
