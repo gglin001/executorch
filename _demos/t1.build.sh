@@ -34,6 +34,6 @@ bash install_requirements.sh
 # test env
 buck2 cquery //examples/portable/executor_runner:executor_runner
 python3 -m examples.portable.scripts.export --model_name="add"
-buck2 run //examples/portable/executor_runner:executor_runner -- --model_path add.pte
+buck2 run --config build.type=debug //examples/portable/executor_runner:executor_runner -- --model_path add.pte
 
 ###############################################################################
