@@ -16,6 +16,7 @@
 #include <executorch/runtime/core/exec_aten/util/scalar_type_util.h>
 
 // MPS headers
+#include <executorch/backends/apple/mps/runtime/operations/MPSGraphSequoiaOps.h>
 #include <executorch/backends/apple/mps/runtime/operations/MPSGraphVenturaOps.h>
 #include <executorch/backends/apple/mps/runtime/operations/OperationUtils.h>
 #include <executorch/backends/apple/mps/schema_generated.h>
@@ -23,11 +24,12 @@
 #include <unordered_map>
 #include <vector>
 
-namespace torch {
-namespace executor {
+namespace executorch {
+namespace backends {
 namespace mps {
 namespace delegate {
 
+using Error = executorch::runtime::Error;
 using DataType = mpsgraph::MPSDataType;
 using TensorPtr = const mpsgraph::MPSTensor *;
 using NodePtr = const mpsgraph::MPSNode *;
@@ -40,7 +42,8 @@ using NodePtr = const mpsgraph::MPSNode *;
  */
 class MPSGraphBuilder {
 public:
-  MPSGraphBuilder(const void *buffer_pointer, std::unordered_map<MPSGraphTensor *, int32_t> &mpsGraphTensorToId);
+  MPSGraphBuilder(const void *buffer_pointer, size_t num_bytes,
+                  std::unordered_map<MPSGraphTensor *, int32_t> &mpsGraphTensorToId);
   ~MPSGraphBuilder() = default;
 
   Error compileModel();
@@ -109,6 +112,7 @@ private:
   _DEFINE_MPS_OP(Isnan);
   _DEFINE_MPS_OP(Isinf);
   _DEFINE_MPS_OP(Round);
+  _DEFINE_MPS_OP(LogicalNot);
   _DEFINE_MPS_OP(NormCdf);
   // Clamp ops
   _DEFINE_MPS_OP(Clamp);
@@ -120,6 +124,9 @@ private:
   // Indexing ops
   _DEFINE_MPS_OP(IndexSelect);
   _DEFINE_MPS_OP(Embedding);
+  _DEFINE_MPS_OP(IndexTensor);
+  _DEFINE_MPS_OP(IndexPut);
+  _DEFINE_MPS_OP(Scatter);
   // Linear algebra ops
   _DEFINE_MPS_OP(MatMul);
   _DEFINE_MPS_OP(Addmm);
@@ -150,9 +157,12 @@ private:
   _DEFINE_MPS_OP(ConstantPadND);
   // Range ops
   _DEFINE_MPS_OP(Arange);
+  // Quant-Dequant ops
+  _DEFINE_MPS_OP(DequantizePerChannelGroup);
 
   // Helper functions
   Error addNodeToMPSGraph(NodePtr nodePtr);
+  Error compileMetalKernel(NodePtr nodePtr);
   MPSShape *getMPSShape(int32_t id);
   MPSShape *getMPSShape(const flatbuffers::Vector<int32_t> *shape);
   int64_t numel(const flatbuffers::Vector<int32_t> *shape);
@@ -161,6 +171,8 @@ private:
   MPSGraphTensor *getMPSGraphTensor(int32_t id);
   NSData *getConstantData(int32_t id);
   std::pair<float, float> getMinMaxValues(NodePtr nodePtr);
+  Error compileMPSGraph();
+  Error compileMetalKernel();
 
   // Each MPSGraph op result in at least MPSGraphTensor being
   // produced, which will be stored in this structure. Other ops
@@ -171,16 +183,20 @@ private:
   const mpsgraph::MPSGraph *_flatBufferGraph;
   // FlatBuffer raw bytes of the serialized MPS model.
   const void *_buffer_pointer;
+  size_t _num_bytes;
 
+  bool _metal_kernel;
   MPSGraph *_mpsGraph;
   MPSGraphExecutable *_mpsGraphExecutable;
   NSMutableDictionary<MPSGraphTensor *, MPSGraphShapedType *> *_feeds;
   NSMutableArray<MPSGraphTensor *> *_targetTensors;
+
+  const uint8_t *_constant_data_ptr;
 };
 
 #undef _DEFINE_MPS_OP
 
 } // namespace delegate
 } // namespace mps
-} // namespace executor
-} // namespace torch
+} // namespace backends
+} // namespace executorch

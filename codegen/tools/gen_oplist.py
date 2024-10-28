@@ -210,7 +210,12 @@ def gen_oplist(
     source_name = None
     et_kernel_metadata = {}
     if root_ops:
-        op_set.update(set(filter(lambda x: len(x) > 0, root_ops.split(","))))
+        # decide delimiter
+        delimiter = "," if "," in root_ops else " "
+        print(root_ops)
+        op_set.update(
+            set(filter(lambda x: len(x) > 0, map(str.strip, root_ops.split(delimiter))))
+        )
         et_kernel_metadata = merge_et_kernel_metadata(
             et_kernel_metadata, {op: ["default"] for op in op_set}
         )
@@ -225,7 +230,7 @@ def gen_oplist(
     if model_file_path:
         assert os.path.isfile(
             model_file_path
-        ), "The value for --model_file_path needs to be a valid file."
+        ), f"The value for --model_file_path needs to be a valid file, got {model_file_path}"
         op_set.update(_get_operators(model_file_path))
         source_name = model_file_path
         et_kernel_metadata = merge_et_kernel_metadata(
@@ -234,7 +239,7 @@ def gen_oplist(
     if ops_schema_yaml_path:
         assert os.path.isfile(
             ops_schema_yaml_path
-        ), "The value for --ops_schema_yaml_path needs to be a valid file."
+        ), f"The value for --ops_schema_yaml_path needs to be a valid file, got {ops_schema_yaml_path}"
         et_kernel_metadata = merge_et_kernel_metadata(
             et_kernel_metadata,
             _get_et_kernel_metadata_from_ops_yaml(ops_schema_yaml_path),
@@ -295,14 +300,33 @@ def main(args: List[Any]) -> None:
     )
     options = parser.parse_args(args)
 
-    gen_oplist(
-        output_path=options.output_path,
-        model_file_path=options.model_file_path,
-        ops_schema_yaml_path=options.ops_schema_yaml_path,
-        root_ops=options.root_ops,
-        ops_dict=options.ops_dict,
-        include_all_operators=options.include_all_operators,
-    )
+    try:
+        gen_oplist(
+            output_path=options.output_path,
+            model_file_path=options.model_file_path,
+            ops_schema_yaml_path=options.ops_schema_yaml_path,
+            root_ops=options.root_ops,
+            ops_dict=options.ops_dict,
+            include_all_operators=options.include_all_operators,
+        )
+    except Exception as e:
+        command = ["python codegen/tools/gen_oplist.py"]
+        if options.model_file_path:
+            command.append(f"--model_file_path {options.model_file_path}")
+        if options.ops_schema_yaml_path:
+            command.append(f"--ops_schema_yaml_path {options.ops_schema_yaml_path}")
+        if options.root_ops:
+            command.append(f"--root_ops {options.root_ops}")
+        if options.ops_dict:
+            command.append(f"--ops_dict {options.ops_dict}")
+        if options.include_all_operators:
+            command.append("--include-all-operators")
+        repro_command = " ".join(command)
+        raise RuntimeError(
+            f"""Failed to generate selected_operators.yaml. Repro command:
+            {repro_command}
+            """
+        ) from e
 
 
 if __name__ == "__main__":

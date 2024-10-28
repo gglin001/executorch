@@ -1,6 +1,7 @@
 #!/bin/bash
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
+# Copyright 2024 Arm Limited and/or its affiliates.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
@@ -18,8 +19,9 @@ retry () {
 install_executorch() {
   which pip
   # Install executorch, this assumes that Executorch is checked out in the
-  # current directory
-  pip install . --no-build-isolation -v
+  # current directory.
+  # TODO(T199538337): clean up install scripts to use install_requirements.sh
+  ./install_requirements.sh --pybind xnnpack
   # Just print out the list of packages for debugging
   pip list
 }
@@ -29,42 +31,6 @@ install_pip_dependencies() {
   # Install all Python dependencies, including PyTorch
   pip install --progress-bar off -r requirements-ci.txt
   popd || return
-}
-
-install_domains() {
-  echo "Install torchvision and torchaudio"
-  pip install --no-use-pep517 --user "git+https://github.com/pytorch/audio.git@${TORCHAUDIO_VERSION}"
-  pip install --no-use-pep517 --user "git+https://github.com/pytorch/vision.git@${TORCHVISION_VERSION}"
-}
-
-install_pytorch_and_domains() {
-  pushd .ci/docker || return
-  TORCH_VERSION=$(cat ci_commit_pins/pytorch.txt)
-  popd || return
-
-  git clone https://github.com/pytorch/pytorch.git
-
-  # Fetch the target commit
-  pushd pytorch || return
-  git checkout "${TORCH_VERSION}"
-  git submodule update --init --recursive
-
-  export _GLIBCXX_USE_CXX11_ABI=0
-  # Then build and install PyTorch
-  python setup.py bdist_wheel
-  pip install "$(echo dist/*.whl)"
-
-  # Grab the pinned audio and vision commits from PyTorch
-  TORCHAUDIO_VERSION=$(cat .github/ci_commit_pins/audio.txt)
-  export TORCHAUDIO_VERSION
-  TORCHVISION_VERSION=$(cat .github/ci_commit_pins/vision.txt)
-  export TORCHVISION_VERSION
-
-  install_domains
-
-  popd || return
-  # Print sccache stats for debugging
-  sccache --show-stats || true
 }
 
 install_flatc_from_source() {
@@ -86,6 +52,17 @@ install_flatc_from_source() {
   popd || return
 }
 
+install_arm() {
+  # NB: This function could be used to install Arm dependencies
+  # Setup arm example environment (including TOSA tools)
+  git config --global user.email "github_executorch@arm.com"
+  git config --global user.name "Github Executorch"
+  bash examples/arm/setup.sh --i-agree-to-the-contained-eula
+
+  # Test tosa_reference flow
+  source examples/arm/ethos-u-scratch/setup_path.sh
+}
+
 build_executorch_runner_buck2() {
   # Build executorch runtime with retry as this step is flaky on macos CI
   retry buck2 build //examples/portable/executor_runner:executor_runner
@@ -99,7 +76,7 @@ build_executorch_runner_cmake() {
   pushd "${CMAKE_OUTPUT_DIR}" || return
   # This command uses buck2 to gather source files and buck2 could crash flakily
   # on MacOS
-  retry cmake -DBUCK2=buck2 -DPYTHON_EXECUTABLE="${PYTHON_EXECUTABLE}" -DCMAKE_BUILD_TYPE=Release ..
+  retry cmake -DPYTHON_EXECUTABLE="${PYTHON_EXECUTABLE}" -DCMAKE_BUILD_TYPE=Release ..
   popd || return
 
   if [ "$(uname)" == "Darwin" ]; then

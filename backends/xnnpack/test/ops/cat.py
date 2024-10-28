@@ -56,11 +56,7 @@ class TestCat(unittest.TestCase):
                 }
             )
 
-        (
-            tester.to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_cat": 1})
-            .partition()
-        )
+        tester.to_edge_transform_and_lower()
 
         if quant:
             tester.check_not(["torch.ops.quantized_decomposed"])
@@ -78,8 +74,8 @@ class TestCat(unittest.TestCase):
         Using Clamp2 because fp16 add is done in fp32 ATM. Need to fix that first.
         """
         inputs = (
-            torch.ones(1, 2, 3).to(torch.float16),
-            torch.ones(3, 2, 3).to(torch.float16),
+            torch.randn(1, 2, 3).to(torch.float16),
+            torch.randn(3, 2, 3).to(torch.float16),
         )
         self._test_cat(self.Cat2(), inputs)
 
@@ -88,9 +84,9 @@ class TestCat(unittest.TestCase):
         Using Clamp2 because fp16 add is done in fp32 ATM. Need to fix that first.
         """
         inputs = (
-            torch.ones(1, 2, 3).to(torch.float16),
-            torch.ones(3, 2, 3).to(torch.float16),
-            torch.ones(2, 2, 3).to(torch.float16),
+            torch.randn(1, 2, 3).to(torch.float16),
+            torch.randn(3, 2, 3).to(torch.float16),
+            torch.randn(2, 2, 3).to(torch.float16),
         )
         self._test_cat(self.Cat3(), inputs)
 
@@ -99,44 +95,44 @@ class TestCat(unittest.TestCase):
         Using Clamp2 because fp16 add is done in fp32 ATM. Need to fix that first.
         """
         inputs = (
-            torch.ones(1, 2, 3).to(torch.float16),
-            torch.ones(3, 2, 3).to(torch.float16),
-            torch.ones(2, 2, 3).to(torch.float16),
-            torch.ones(5, 2, 3).to(torch.float16),
+            torch.randn(1, 2, 3).to(torch.float16),
+            torch.randn(3, 2, 3).to(torch.float16),
+            torch.randn(2, 2, 3).to(torch.float16),
+            torch.randn(5, 2, 3).to(torch.float16),
         )
         self._test_cat(self.Cat4(), inputs)
 
     def test_fp32_cat2(self):
-        inputs = (torch.ones(1, 2, 3), torch.ones(3, 2, 3))
+        inputs = (torch.randn(1, 2, 3), torch.randn(3, 2, 3))
         self._test_cat(self.Cat2(), inputs)
 
     def test_fp32_cat3(self):
-        inputs = (torch.ones(1, 2, 3), torch.ones(3, 2, 3), torch.ones(2, 2, 3))
+        inputs = (torch.randn(1, 2, 3), torch.randn(3, 2, 3), torch.randn(2, 2, 3))
         self._test_cat(self.Cat3(), inputs)
 
     def test_fp32_cat4(self):
         inputs = (
-            torch.ones(1, 2, 3),
-            torch.ones(3, 2, 3),
-            torch.ones(2, 2, 3),
-            torch.ones(5, 2, 3),
+            torch.randn(1, 2, 3),
+            torch.randn(3, 2, 3),
+            torch.randn(2, 2, 3),
+            torch.randn(5, 2, 3),
         )
         self._test_cat(self.Cat4(), inputs)
 
     def test_qs8_cat2(self):
-        inputs = (torch.ones(1, 2, 3), torch.ones(3, 2, 3))
+        inputs = (torch.randn(1, 2, 3), torch.randn(3, 2, 3))
         self._test_cat(self.Cat2(), inputs, cat_num=2, quant=True)
 
     def test_qs8_cat3(self):
-        inputs = (torch.ones(1, 2, 3), torch.ones(3, 2, 3), torch.ones(2, 2, 3))
+        inputs = (torch.randn(1, 2, 3), torch.randn(3, 2, 3), torch.randn(2, 2, 3))
         self._test_cat(self.Cat3(), inputs, cat_num=3, quant=True)
 
     def test_qs8_cat4(self):
         inputs = (
-            torch.ones(1, 2, 3),
-            torch.ones(3, 2, 3),
-            torch.ones(2, 2, 3),
-            torch.ones(5, 2, 3),
+            torch.randn(1, 2, 3),
+            torch.randn(3, 2, 3),
+            torch.randn(2, 2, 3),
+            torch.randn(5, 2, 3),
         )
         self._test_cat(self.Cat4(), inputs, cat_num=4, quant=True)
 
@@ -145,19 +141,17 @@ class TestCat(unittest.TestCase):
         XNNPACK only supports concatenating up to 4 values, so it should not delegate here.
         """
         inputs = (
-            torch.ones(1, 2, 3),
-            torch.ones(3, 2, 3),
-            torch.ones(2, 2, 3),
-            torch.ones(5, 2, 3),
-            torch.ones(1, 2, 3),
+            torch.randn(1, 2, 3),
+            torch.randn(3, 2, 3),
+            torch.randn(2, 2, 3),
+            torch.randn(5, 2, 3),
+            torch.randn(1, 2, 3),
         )
         (
             Tester(self.Cat5(), inputs)
             .export()
             .check_count({"torch.ops.aten.cat": 1})
-            .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_cat": 1})
-            .partition()
+            .to_edge_transform_and_lower()
             .check_count({"executorch_exir_dialects_edge__ops_aten_cat": 1})
         )
 
@@ -169,7 +163,7 @@ class TestCat(unittest.TestCase):
             return torch.cat([x, y], -1)
 
     def test_fp32_cat_negative_dim(self):
-        inputs = (torch.ones(3, 2, 3), torch.ones(3, 2, 1))
+        inputs = (torch.randn(3, 2, 3), torch.randn(3, 2, 1))
         self._test_cat(self.CatNegativeDim(), inputs)
 
     class CatNhwc(torch.nn.Module):
@@ -189,7 +183,7 @@ class TestCat(unittest.TestCase):
             return z + z
 
     @unittest.skip("T172862540 - Runtime failure.")
-    def test_qs8_cat_nhwc(self):
+    def _test_qs8_cat_nhwc(self):
         inputs = (torch.randn(1, 1, 3, 3), torch.randn(1, 1, 3, 3))
         self._test_cat(self.CatNhwc(), inputs, quant=True, quant_ops=3)
 
@@ -211,6 +205,6 @@ class TestCat(unittest.TestCase):
             return z + z
 
     @unittest.skip("T172862540 - Runtime failure.")
-    def test_qs8_cat_nhwc2(self):
+    def _test_qs8_cat_nhwc2(self):
         inputs = (torch.randn(1, 1, 3, 3), torch.randn(1, 1, 3, 3))
         self._test_cat(self.CatNhwc(), inputs, quant=True, quant_ops=4)

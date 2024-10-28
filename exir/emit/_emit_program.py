@@ -8,7 +8,6 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
-import executorch.extension.pytree as ex_pytree
 import torch
 import torch.fx
 from executorch.exir.emit._emitter import (
@@ -18,87 +17,11 @@ from executorch.exir.emit._emitter import (
     _TopLevelEmitter,
 )
 from executorch.exir.error import ExportError, ExportErrorType
-from executorch.exir.schema import (
-    Bool,
-    Chain,
-    ContainerMetadata,
-    Double,
-    EValue,
-    ExecutionPlan,
-    Int,
-    Program,
-    String,
-    SubsegmentOffsets,
-)
-from executorch.exir.tensor import layout_enum, scalar_type_enum
+
+from executorch.exir.schema import Buffer, Program, SubsegmentOffsets
 from executorch.exir.version import EXECUTORCH_SCHEMA_VERSION
 from torch.export.exported_program import ExportedProgram, OutputKind
 from torch.utils import _pytree as pytree
-
-
-def _emit_prim_getters(prim_getters: Dict[str, Any]) -> List[ExecutionPlan]:
-    """
-    Given a mapping of function names to return values, emit simple execution
-    plans that just return these constant values.
-
-    Precondition: All the values are primitives (bool, float, int, str, enum)
-    or structures (list, dict) of them.
-    """
-    plans = []
-    # flatten any structures
-    for method, vals in prim_getters.items():
-        # pyre-fixme[16]: Module `pytree` has no attribute `tree_flatten`.
-        flattened_output, spec = ex_pytree.tree_flatten(vals)
-        spec = spec.to_str()
-        chain = Chain(
-            inputs=[],
-            outputs=[],
-            instructions=[],
-            stacktrace=None,
-        )
-
-        # switch on type of prim
-        values = []
-        for val in flattened_output:
-            if isinstance(val, float):
-                values.append(EValue(Double(val)))
-
-            elif isinstance(val, bool):
-                values.append(EValue(Bool(val)))
-
-            elif isinstance(val, int):
-                values.append(EValue(Int(val)))
-
-            elif isinstance(val, str):
-                values.append(EValue(String(val)))
-
-            elif isinstance(val, torch.dtype):
-                values.append(EValue(Int(scalar_type_enum(val))))
-
-            elif isinstance(val, torch.layout):
-                values.append(EValue(Int(layout_enum(val))))
-
-            else:
-                raise ExportError(
-                    ExportErrorType.NOT_SUPPORTED,
-                    f"Error emitting {method} which returns a value of type {type(val)}. which is not a supported primitive",
-                )
-
-        # add to plans
-        plans.append(
-            ExecutionPlan(
-                name=method,
-                values=values,
-                inputs=[],
-                outputs=list(range(0, len(values))),
-                chains=[chain],
-                operators=[],
-                delegates=[],
-                non_const_buffer_sizes=[0, 0],
-                container_meta_type=ContainerMetadata("", spec),
-            )
-        )
-    return plans
 
 
 @dataclass
@@ -121,6 +44,8 @@ class EmitterOutput:
     method_to_delegate_debug_id_map: Dict[
         str, Dict[int, Dict[str, Union[str, _DelegateDebugIdentifierMap]]]
     ]
+
+    mutable_data: Optional[List[Buffer]]
 
 
 def _remove_non_user_outputs(exported_program: ExportedProgram) -> torch.fx.GraphModule:
@@ -151,6 +76,35 @@ def _remove_non_user_outputs(exported_program: ExportedProgram) -> torch.fx.Grap
         gm.graph.erase_node(output_node)
 
     return gm
+
+
+# For each entry point in the model, determine if its a joint graph,
+# and if it is return a map of the indices in the model output that the
+# gradient outputs start at and that the parameter outputs start at.
+def _get_training_metadata(methods: Dict[str, ExportedProgram]) -> Dict[str, int]:
+    gradients_method_prefix = "__et_training_gradients_index_"
+    parameters_method_prefix = "__et_training_parameters_index_"
+    fqn_method_prefix = "__et_training_fqn_"
+    training_metadata = {}
+    for name, method in methods.items():
+        found_grad = False
+        found_param = False
+        fqns = []
+        i = 0
+        for output_spec in method.graph_signature.output_specs:
+            if output_spec.kind == OutputKind.GRADIENT_TO_PARAMETER:
+                if not found_grad:
+                    training_metadata[gradients_method_prefix + name] = i
+                    found_grad = True
+                fqns.append(output_spec.target)
+            elif output_spec.kind == OutputKind.TOKEN and not found_param:
+                assert found_grad  # Params must come after gradients
+                training_metadata[parameters_method_prefix + name] = i
+                found_param = True
+            i += 1
+            if len(fqns) > 0:
+                training_metadata[fqn_method_prefix + name] = fqns
+    return training_metadata
 
 
 def emit_program(
@@ -218,9 +172,13 @@ def emit_program(
             emitter.instr_id_to_delegate_debug_id_map
         )
 
+    training_metadata = _get_training_metadata(methods)
+    if len(training_metadata) > 0:
+        plans.extend(emitter._emit_prim_getters(training_metadata))
+
     # emit any primitive getters
     if prim_getters is not None:
-        plans.extend(_emit_prim_getters(prim_getters))
+        plans.extend(emitter._emit_prim_getters(prim_getters))
 
     return EmitterOutput(
         debug_handle_map=debug_handle_map,
@@ -234,5 +192,11 @@ def emit_program(
             segments=[],
             # Subsegment offsets may be added at serialization time.
             constant_segment=SubsegmentOffsets(segment_index=0, offsets=[]),
+            mutable_data_segments=None,  # Will be filled in during serialization
+        ),
+        mutable_data=(
+            program_state.mutable_buffer
+            if len(program_state.mutable_buffer) > 1
+            else None
         ),
     )

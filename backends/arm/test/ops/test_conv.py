@@ -4,7 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import logging
 import unittest
 
 from typing import List, Tuple, Union
@@ -13,10 +12,8 @@ import torch
 from executorch.backends.arm.test import common
 
 from executorch.backends.arm.test.tester.arm_tester import ArmTester
+from executorch.exir.backend.compile_spec_schema import CompileSpec
 from parameterized import parameterized
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 class Conv2d(torch.nn.Module):
@@ -114,8 +111,8 @@ class Conv2d(torch.nn.Module):
         return x
 
 
-conv2d_2x2_3x1x40x40_nobias = Conv2d(
-    in_channels=1,
+conv2d_2x2_3x2x40x40_nobias = Conv2d(
+    in_channels=2,
     out_channels=3,
     kernel_size=(2, 2),
     stride=1,
@@ -159,14 +156,14 @@ conv2d_1x1_1x2x128x128_st1 = Conv2d(
     batches=1,
 )
 
-conv2d_2x2_1x1x14x14_st2 = Conv2d(
+conv2d_2x2_1x1x14x13_st2 = Conv2d(
     in_channels=1,
     out_channels=1,
     kernel_size=(2, 2),
     stride=2,
     padding=0,
     width=14,
-    height=14,
+    height=13,
     batches=1,
 )
 
@@ -191,6 +188,18 @@ conv2d_3x3_1x3x224x224_st2_pd1 = Conv2d(
     height=224,
     batches=1,
 )
+
+conv2d_5x5_1x3x14x15_st3_pd1 = Conv2d(
+    in_channels=3,
+    out_channels=16,
+    kernel_size=(5, 5),
+    stride=3,
+    padding=1,
+    width=14,
+    height=15,
+    batches=1,
+)
+
 
 two_conv2d_nobias = Conv2d(
     nbr_conv=2,
@@ -221,33 +230,29 @@ two_conv2d = Conv2d(
 # Shenanigan to get a nicer output when test fails. With unittest it looks like:
 # FAIL: test_conv2d_tosa_BI_2_3x3_1x3x12x12_st2_pd1
 testsuite = [
-    ("2x2_3x1x40x40_nobias", conv2d_2x2_3x1x40x40_nobias),
+    ("2x2_3x2x40x40_nobias", conv2d_2x2_3x2x40x40_nobias),
     ("3x3_1x3x256x256_st1", conv2d_3x3_1x3x256x256_st1),
     ("3x3_1x3x12x12_st2_pd1", conv2d_3x3_1x3x12x12_st2_pd1),
     ("1x1_1x2x128x128_st1", conv2d_1x1_1x2x128x128_st1),
-    ("2x2_1x1x14x14_st2", conv2d_2x2_1x1x14x14_st2),
+    ("2x2_1x1x14x13_st2_needs_adjust_pass", conv2d_2x2_1x1x14x13_st2),
+    ("conv2d_5x5_1x3x14x15_st3_pd1_needs_adjust_pass", conv2d_5x5_1x3x14x15_st3_pd1),
     ("5x5_3x2x128x128_st1", conv2d_5x5_3x2x128x128_st1),
     ("3x3_1x3x224x224_st2_pd1", conv2d_3x3_1x3x224x224_st2_pd1),
     ("two_conv2d_nobias", two_conv2d_nobias),
     ("two_conv2d", two_conv2d),
 ]
 
-# Expected fails on Ethos-U55/U65. This is a known limitation.
-# Check: https://review.mlplatform.org/plugins/gitiles/ml/ethos-u/ethos-u-vela/+/refs/heads/main/SUPPORTED_OPS.md
-#     IFM Tensor batch size must be 1 - [FULLY_CONNECTED, RESHAPE, SHAPE, SLICE, SOFTMAX, SPLIT, SPLIT_V, SQUEEZE, STRIDED_SLICE, UNPACK]
-testsuite_u55 = testsuite.copy()
-testsuite_u55.remove(("2x2_3x1x40x40_nobias", conv2d_2x2_3x1x40x40_nobias))
-testsuite_u55.remove(("5x5_3x2x128x128_st1", conv2d_5x5_3x2x128x128_st1))
-
 
 class TestConv2D(unittest.TestCase):
+    """Tests Conv2D, both single ops and multiple Convolutions in series."""
+
     def _test_conv2d_tosa_MI_pipeline(
         self, module: torch.nn.Module, test_data: Tuple[torch.Tensor]
     ):
-        tester = (
+        (
             ArmTester(
                 module,
-                inputs=test_data,
+                example_inputs=test_data,
                 compile_spec=common.get_tosa_compile_spec(permute_memory_to_nhwc=True),
             )
             .export()
@@ -256,23 +261,18 @@ class TestConv2D(unittest.TestCase):
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(["executorch_exir_dialects_edge__ops_aten_convolution_default"])
             .to_executorch()
+            .run_method_and_compare_outputs(inputs=test_data)
         )
-        if common.TOSA_REF_MODEL_INSTALLED:
-            tester.run_method_and_compare_outputs()
-        else:
-            logger.warning(
-                "TOSA ref model tool not installed, skip numerical correctness tests"
-            )
 
     def _test_conv2d_tosa_BI_pipeline(
         self,
         module: torch.nn.Module,
         test_data: Tuple[torch.Tensor],
     ):
-        tester = (
+        (
             ArmTester(
                 module,
-                inputs=test_data,
+                example_inputs=test_data,
                 compile_spec=common.get_tosa_compile_spec(permute_memory_to_nhwc=True),
             )
             .quantize()
@@ -282,22 +282,20 @@ class TestConv2D(unittest.TestCase):
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(["executorch_exir_dialects_edge__ops_aten_convolution_default"])
             .to_executorch()
+            .run_method_and_compare_outputs(inputs=test_data, qtol=1)
         )
-        if common.TOSA_REF_MODEL_INSTALLED:
-            tester.run_method_and_compare_outputs(qtol=1)
-        else:
-            logger.warning(
-                "TOSA ref model tool not installed, skip numerical correctness tests"
-            )
 
-    def _test_conv2d_u55_BI_pipeline(
-        self, module: torch.nn.Module, test_data: Tuple[torch.Tensor]
+    def _test_conv2d_ethosu_BI_pipeline(
+        self,
+        compile_spec: CompileSpec,
+        module: torch.nn.Module,
+        test_data: Tuple[torch.Tensor],
     ):
         (
             ArmTester(
                 module,
-                inputs=test_data,
-                compile_spec=common.get_u55_compile_spec(permute_memory_to_nhwc=True),
+                example_inputs=test_data,
+                compile_spec=compile_spec,
             )
             .quantize()
             .export()
@@ -316,10 +314,18 @@ class TestConv2D(unittest.TestCase):
     def test_conv2d_tosa_BI(self, test_name, model):
         self._test_conv2d_tosa_BI_pipeline(model, model.get_inputs())
 
-    @parameterized.expand(testsuite_u55)
-    @unittest.skipIf(
-        not common.VELA_INSTALLED,
-        "There is no point in running U55 tests if the Vela tool is not installed",
-    )
+    @parameterized.expand(testsuite)
     def test_conv2d_u55_BI(self, test_name, model):
-        self._test_conv2d_u55_BI_pipeline(model, model.get_inputs())
+        self._test_conv2d_ethosu_BI_pipeline(
+            common.get_u55_compile_spec(permute_memory_to_nhwc=True),
+            model,
+            model.get_inputs(),
+        )
+
+    @parameterized.expand(testsuite)
+    def test_conv2d_u85_BI(self, test_name, model):
+        self._test_conv2d_ethosu_BI_pipeline(
+            common.get_u85_compile_spec(permute_memory_to_nhwc=True),
+            model,
+            model.get_inputs(),
+        )

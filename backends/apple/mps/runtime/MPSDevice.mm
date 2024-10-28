@@ -8,13 +8,29 @@
 #include <memory>
 #include <mutex>
 
-namespace torch {
-namespace executor {
+namespace executorch {
+namespace backends {
 namespace mps {
 namespace delegate {
 
+using executorch::runtime::Error;
+
 static std::unique_ptr<MPSDevice> mps_device;
 static std::once_flag mpsdev_init;
+
+static inline MTLLanguageVersion getMetalLanguageVersion(const id<MTLDevice>& device, bool macOS13Plus) {
+  // MPS Advanced Indexing needs at least Metal 2.0 (support for Argument Buffers and function constants)
+  // host_name attribute needs at least Metal 2.2 and ulong needs Metal 2.3 (supported on MacOS 11+)
+  MTLLanguageVersion languageVersion = MTLLanguageVersion2_3;
+#if defined(__MAC_13_0)
+  if (macOS13Plus) {
+    languageVersion = MTLLanguageVersion3_0;
+  }
+#endif
+
+  ET_CHECK_MSG([device supportsFamily:MTLGPUFamilyMac2], "Missing Metal support for MTLGPUFamilyMac2");
+  return languageVersion;
+}
 
 MPSDevice::~MPSDevice() {
   [_mtl_device release];
@@ -62,7 +78,7 @@ bool MPSDevice::isMacOS13Plus(MacOSVersion version) const {
   static bool _macos_13_3_plus = [compileOptions respondsToSelector:@selector(maxTotalThreadsPerThreadgroup)] == YES;
 
   static bool _macos_14_0_plus = [mpsCD instancesRespondToSelector:@selector(conjugateWithTensor:name:)] == YES;
-
+  static bool _macos_15_0_plus = [mpsCD instancesRespondToSelector:@selector(scaledDotProductAttentionWithQueryTensor:keyTensor:valueTensor:maskTensor:scale:name:)] == YES;
   switch (version) {
     case MacOSVersion::MACOS_VER_13_0_PLUS:
       return _macos_13_0_plus;
@@ -74,16 +90,69 @@ bool MPSDevice::isMacOS13Plus(MacOSVersion version) const {
       return _macos_13_3_plus;
     case MacOSVersion::MACOS_VER_14_0_PLUS:
       return _macos_14_0_plus;
+    case MacOSVersion::MACOS_VER_15_0_PLUS:
+      return _macos_15_0_plus;
     default:
       return false;
   }
 }
 
-bool isMacOS13OrNewer(MacOSVersion version) {
+const char* getLibraryCString(LibraryType libraryType) {
+  switch (libraryType) {
+    case LibraryType::INDEXING_KERNELS:
+      return "TODO";
+    default:
+      ET_CHECK_MSG(false, "Unhandled library type!");
+  }
+}
+
+Error
+MPSDevice::compileLibrary(LibraryType libraryType) {
+  Error err = Error::Ok;
+  NSError* error = nil;
+  MTLCompileOptions* options = [MTLCompileOptions new];
+  [options setLanguageVersion:getMetalLanguageVersion(_mtl_device, isMacOS13Plus(MacOSVersion::MACOS_VER_13_0_PLUS))];
+  [options setFastMathEnabled:YES];
+  id<MTLLibrary> lib =
+      [_mtl_device newLibraryWithSource:[NSString stringWithCString:getLibraryCString(libraryType)
+                                                           encoding:NSASCIIStringEncoding]
+                                options:options
+                                  error:&error];
+
+  ET_CHECK_OR_RETURN_ERROR(
+    lib != nil,
+    Internal,
+    "Failed to create indexing library, error: %s", [[error description] UTF8String]
+  );
+
+  _m_library_cache[libraryType] = lib;
+  return err;
+}
+
+Error
+MPSDevice::compilePSO(LibraryType libraryType, const char* kernelName) {
+  Error err = Error::Ok;
+  if (_m_library_cache.find(libraryType) == _m_library_cache.end()) {
+    ET_LOG(Debug, "Compiling library type: %d", libraryType);
+    err = compileLibrary(libraryType);
+    ET_CHECK_OR_RETURN_ERROR(
+      err == Error::Ok,
+      Internal,
+      "An error occured occured while compiling library %d", libraryType
+    );
+  }
+  if (_m_pso_cache.find(kernelName) == _m_pso_cache.end()) {
+    ET_LOG(Debug, "Compiling kernel: %s", kernelName);
+    // err = compilePSO(libraryType, kernelName);
+  }
+  return err;
+}
+
+bool is_macos_13_or_newer(MacOSVersion version) {
   return MPSDevice::getInstance()->isMacOS13Plus(version);
 }
 
 } // namespace delegate
 } // namespace mps
-} // namespace executor
-} // namespace torch
+} // namespace backends
+} // namespace executorch

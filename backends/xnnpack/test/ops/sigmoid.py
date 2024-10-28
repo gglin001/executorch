@@ -25,9 +25,7 @@ class TestSigmoid(unittest.TestCase):
             Tester(self.Sigmoid(), inputs)
             .export()
             .check_count({"torch.ops.aten.sigmoid.default": 1})
-            .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_sigmoid_default": 1})
-            .partition()
+            .to_edge_transform_and_lower()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(["executorch_exir_dialects_edge__ops_aten_sigmoid_default"])
             .to_executorch()
@@ -36,7 +34,7 @@ class TestSigmoid(unittest.TestCase):
         )
 
     def test_fp16_sigmoid(self):
-        inputs = (torch.ones(4).to(torch.float16),)
+        inputs = (torch.randn(4).to(torch.float16),)
         self._test_sigmoid(inputs)
 
     def test_fp32_sigmoid(self):

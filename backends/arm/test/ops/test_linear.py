@@ -14,6 +14,8 @@ import torch
 from executorch.backends.arm.test import common
 
 from executorch.backends.arm.test.tester.arm_tester import ArmTester
+from executorch.exir import EdgeCompileConfig
+from executorch.exir.backend.compile_spec_schema import CompileSpec
 from parameterized import parameterized
 
 logger = logging.getLogger(__name__)
@@ -25,17 +27,17 @@ test_data_suite_rank1 = [
     (
         "model_linear_rank1_zeros",
         torch.zeros(10),
-        10,
+        15,
     ),
     (
         "model_linear_rank1_ones",
         torch.ones(10),
-        10,
+        15,
     ),
     (
         "model_linear_rank1_negative_ones",
         torch.ones(10) * (-1),
-        10,
+        20,
     ),
     (
         "model_linear_rank1_rand",
@@ -45,12 +47,12 @@ test_data_suite_rank1 = [
     (
         "model_linear_rank1_negative_large_rand",
         torch.rand(10) * (-100),
-        10,
+        30,
     ),
     (
         "model_linear_rank1_large_randn",
-        torch.randn(10) * 100,
-        10,
+        torch.randn(15) * 100,
+        20,
     ),
 ]
 
@@ -90,6 +92,12 @@ test_data_suite_rank4 = [
 
 
 class TestLinear(unittest.TestCase):
+    """tests the linear operation y = Ax + b"""
+
+    _edge_compile_config: EdgeCompileConfig = EdgeCompileConfig(
+        _skip_dim_order=True,  # TODO(T182928844): Delegate dim order op to backend.
+    )
+
     class Linear(torch.nn.Module):
         def __init__(
             self,
@@ -110,70 +118,65 @@ class TestLinear(unittest.TestCase):
     def _test_linear_tosa_MI_pipeline(
         self, module: torch.nn.Module, test_data: Tuple[torch.Tensor]
     ):
-        tester = (
+        (
             ArmTester(
                 module,
-                inputs=test_data,
-                compile_spec=common.get_tosa_compile_spec(),
+                example_inputs=test_data,
+                compile_spec=common.get_tosa_compile_spec(permute_memory_to_nhwc=False),
             )
             .export()
-            .check_count({"torch.ops.aten.addmm.default": 1})
+            .check_count({"torch.ops.aten.linear.default": 1})
             .check_not(["torch.ops.quantized_decomposed"])
-            .to_edge()
+            .to_edge(config=self._edge_compile_config)
             .partition()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .to_executorch()
+            .run_method_and_compare_outputs(inputs=test_data)
         )
-        if common.TOSA_REF_MODEL_INSTALLED:
-            tester.run_method_and_compare_outputs()
-        else:
-            logger.warning(
-                "TOSA ref model tool not installed, skip numerical correctness tests"
-            )
 
     def _test_linear_tosa_BI_pipeline(
-        self, module: torch.nn.Module, test_data: Tuple[torch.Tensor]
-    ):
-        tester = (
-            ArmTester(
-                module,
-                inputs=test_data,
-                compile_spec=common.get_tosa_compile_spec(),
-            )
-            .quantize()
-            .export()
-            .check_count({"torch.ops.aten.addmm.default": 1})
-            .check(["torch.ops.quantized_decomposed"])
-            .to_edge()
-            .partition()
-            .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
-            .to_executorch()
-        )
-        if common.TOSA_REF_MODEL_INSTALLED:
-            tester.run_method_and_compare_outputs(qtol=True)
-        else:
-            logger.warning(
-                "TOSA ref model tool not installed, skip numerical correctness tests"
-            )
-
-    def _test_linear_tosa_u55_BI_pipeline(
         self, module: torch.nn.Module, test_data: Tuple[torch.Tensor]
     ):
         (
             ArmTester(
                 module,
-                inputs=test_data,
-                compile_spec=common.get_u55_compile_spec(),
+                example_inputs=test_data,
+                compile_spec=common.get_tosa_compile_spec(permute_memory_to_nhwc=False),
             )
             .quantize()
             .export()
-            .check_count({"torch.ops.aten.addmm.default": 1})
+            .check_count({"torch.ops.aten.linear.default": 1})
             .check(["torch.ops.quantized_decomposed"])
-            .to_edge()
+            .to_edge(config=self._edge_compile_config)
             .partition()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .to_executorch()
+            .run_method_and_compare_outputs(inputs=test_data, qtol=True)
         )
+
+    def _test_linear_tosa_ethosu_BI_pipeline(
+        self,
+        module: torch.nn.Module,
+        compile_spec: CompileSpec,
+        test_data: Tuple[torch.Tensor],
+    ) -> ArmTester:
+        tester = (
+            ArmTester(
+                module,
+                example_inputs=test_data,
+                compile_spec=compile_spec,
+            )
+            .quantize()
+            .export()
+            .check_count({"torch.ops.aten.linear.default": 1})
+            .check(["torch.ops.quantized_decomposed"])
+            .to_edge(config=self._edge_compile_config)
+            .partition()
+            .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
+            .to_executorch()
+            .serialize()
+        )
+        return tester
 
     @parameterized.expand(test_data_suite_rank1 + test_data_suite_rank4)
     def test_linear_tosa_MI(
@@ -206,10 +209,6 @@ class TestLinear(unittest.TestCase):
         )
 
     @parameterized.expand(test_data_suite_rank1)
-    @unittest.skipIf(
-        not common.VELA_INSTALLED,
-        "There is no point in running U55 tests if the Vela tool is not installed",
-    )
     def test_linear_tosa_u55_BI(
         self,
         test_name: str,
@@ -218,10 +217,32 @@ class TestLinear(unittest.TestCase):
     ):
         in_features = test_data.shape[-1]
         test_data = (test_data,)
-        self._test_linear_tosa_u55_BI_pipeline(
+        tester = self._test_linear_tosa_ethosu_BI_pipeline(
             self.Linear(
                 in_features=in_features,
                 out_features=out_features,
             ),
+            common.get_u55_compile_spec(permute_memory_to_nhwc=False),
+            test_data,
+        )
+
+        if common.is_option_enabled("corstone300"):
+            tester.run_method_and_compare_outputs(qtol=1, inputs=test_data)
+
+    @parameterized.expand(test_data_suite_rank1)
+    def test_linear_tosa_u85_BI(
+        self,
+        test_name: str,
+        test_data: torch.Tensor,
+        out_features: int,
+    ):
+        in_features = test_data.shape[-1]
+        test_data = (test_data,)
+        self._test_linear_tosa_ethosu_BI_pipeline(
+            self.Linear(
+                in_features=in_features,
+                out_features=out_features,
+            ),
+            common.get_u85_compile_spec(permute_memory_to_nhwc=False),
             test_data,
         )

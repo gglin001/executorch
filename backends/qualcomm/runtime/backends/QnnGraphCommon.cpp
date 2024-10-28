@@ -6,9 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 #include <executorch/backends/qualcomm/runtime/backends/QnnGraphCommon.h>
-namespace torch {
-namespace executor {
+namespace executorch {
+namespace backends {
 namespace qnn {
+
+using executorch::runtime::Error;
+
 Error QnnGraph::Configure() {
   // create qnn backend
   const QnnInterface& qnn_interface = implementation_.GetQnnInterface();
@@ -82,7 +85,7 @@ Error QnnGraph::EnsureTensorInQnnGraph(
 
     int name_conflict_count = 0;
     while (error == QNN_TENSOR_ERROR_NAME_HASH_COLLISION) {
-      std::string old_name = tensor_wrapper->GetName();
+      const std::string& old_name = tensor_wrapper->GetName();
 
       std::string new_name =
           old_name + "_" + std::to_string(name_conflict_count);
@@ -104,5 +107,5 @@ Error QnnGraph::EnsureTensorInQnnGraph(
   return Error::Ok;
 }
 } // namespace qnn
-} // namespace executor
-} // namespace torch
+} // namespace backends
+} // namespace executorch

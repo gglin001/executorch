@@ -9,9 +9,13 @@ import unittest
 
 from typing import Tuple
 
+import pytest
+
 import torch
 from executorch.backends.arm.test import common
 from executorch.backends.arm.test.tester.arm_tester import ArmTester
+from executorch.exir.backend.backend_details import CompileSpec
+from parameterized import parameterized
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -101,7 +105,7 @@ class ComboConv2dMeandim(torch.nn.Module):
         return self.adaptive_avg_pool2d(x)
 
 
-class ComboConvBatchnormRelu(torch.nn.Module):
+class ComboConvBatchnormRelu6(torch.nn.Module):
     edge_op_list = [
         "executorch_exir_dialects_edge__ops_aten_convolution_default",
         "executorch_exir_dialects_edge__ops_aten__native_batch_norm_legit_no_training_default",
@@ -126,14 +130,68 @@ class ComboConvBatchnormRelu(torch.nn.Module):
         return x
 
 
+class ComboConvRelu6(torch.nn.Module):
+    edge_op_list = [
+        "executorch_exir_dialects_edge__ops_aten_convolution_default",
+        "executorch_exir_dialects_edge__ops_aten_hardtanh_default",
+    ]
+
+    test_data = [
+        (20 * torch.randn(1, 3, 256, 256),),
+        (5 * torch.randn(1, 3, 256, 256),),
+        (torch.randn(1, 3, 256, 256),),
+        (-5 * torch.randn(1, 3, 256, 256),),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self.conv2d = torch.nn.Conv2d(
+            in_channels=3, out_channels=3, kernel_size=3, stride=1, groups=1
+        )
+        self.relu6 = torch.nn.ReLU6()
+
+    def forward(self, x):
+        x = self.conv2d(x)
+        x = self.relu6(x)
+        return x
+
+
+class ComboConvAvgPool2d(torch.nn.Module):
+    edge_op_list = [
+        "executorch_exir_dialects_edge__ops_aten_convolution_default",
+        "executorch_exir_dialects_edge__ops_aten_avg_pool2d_default",
+    ]
+
+    test_data = [
+        (20 * torch.randn(1, 3, 64, 32),),
+        (torch.randn(1, 3, 100, 200),),
+        (5 * torch.randn(1, 3, 256, 256),),
+        (torch.rand(1, 3, 512, 128),),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self.conv2d = torch.nn.Conv2d(
+            in_channels=3, out_channels=3, kernel_size=3, stride=1, groups=1
+        )
+        self.avg_pool2d = torch.nn.AvgPool2d(kernel_size=(2, 2))
+
+    def forward(self, x):
+        x = self.conv2d(x)
+        x = self.avg_pool2d(x)
+        return x
+
+
 class TestConvCombos(unittest.TestCase):
+    """Tests conv combined with other ops."""
+
     def _test_conv_combo_tosa_MI_pipeline(
         self, module: torch.nn.Module, test_data: Tuple[torch.Tensor]
     ):
-        tester = (
+        (
             ArmTester(
                 module,
-                inputs=test_data,
+                example_inputs=test_data,
                 compile_spec=common.get_tosa_compile_spec(permute_memory_to_nhwc=True),
             )
             .export()
@@ -142,13 +200,8 @@ class TestConvCombos(unittest.TestCase):
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(list(module.edge_op_list))
             .to_executorch()
+            .run_method_and_compare_outputs(inputs=test_data)
         )
-        if common.TOSA_REF_MODEL_INSTALLED:
-            tester.run_method_and_compare_outputs()
-        else:
-            logger.warning(
-                "TOSA ref model tool not installed, skip numerical correctness tests"
-            )
 
     def _test_conv_combo_tosa_BI_pipeline(
         self,
@@ -157,10 +210,10 @@ class TestConvCombos(unittest.TestCase):
         atol: float = 1e-3,
         rtol: float = 1e-3,
     ):
-        tester = (
+        (
             ArmTester(
                 module,
-                inputs=test_data,
+                example_inputs=test_data,
                 compile_spec=common.get_tosa_compile_spec(permute_memory_to_nhwc=True),
             )
             .quantize()
@@ -170,22 +223,22 @@ class TestConvCombos(unittest.TestCase):
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(list(module.edge_op_list))
             .to_executorch()
-        )
-        if common.TOSA_REF_MODEL_INSTALLED:
-            tester.run_method_and_compare_outputs(atol=atol, rtol=rtol, qtol=1)
-        else:
-            logger.warning(
-                "TOSA ref model tool not installed, skip numerical correctness tests"
+            .run_method_and_compare_outputs(
+                inputs=test_data, atol=atol, rtol=rtol, qtol=1
             )
+        )
 
-    def _test_conv_combo_u55_BI_pipeline(
-        self, module: torch.nn.Module, test_data: Tuple[torch.Tensor]
+    def _test_conv_combo_ethos_BI_pipeline(
+        self,
+        module: torch.nn.Module,
+        compile_spec: CompileSpec,
+        test_data: Tuple[torch.Tensor],
     ):
         (
             ArmTester(
                 module,
-                inputs=test_data,
-                compile_spec=common.get_u55_compile_spec(permute_memory_to_nhwc=True),
+                example_inputs=test_data,
+                compile_spec=compile_spec,
             )
             .quantize()
             .export()
@@ -207,38 +260,77 @@ class TestConvCombos(unittest.TestCase):
         model = ComboConv2dMeandim()
         self._test_conv_combo_tosa_BI_pipeline(model, model.get_inputs())
 
-    @unittest.skipIf(
-        not common.VELA_INSTALLED,
-        "There is no point in running U55 tests if the Vela tool is not installed",
-    )
     def test_conv_meandim_u55_BI(self):
         model = ComboConv2dMeandim()
-        self._test_conv_combo_u55_BI_pipeline(model, model.get_inputs())
+        self._test_conv_combo_ethos_BI_pipeline(
+            model,
+            common.get_u55_compile_spec(permute_memory_to_nhwc=True),
+            model.get_inputs(),
+        )
+
+    def test_conv_meandim_u85_BI(self):
+        model = ComboConv2dMeandim()
+        self._test_conv_combo_ethos_BI_pipeline(
+            model,
+            common.get_u85_compile_spec(permute_memory_to_nhwc=True),
+            model.get_inputs(),
+        )
 
     ##############################
     ## Conv + batch norm + relu ##
     ##############################
-    def test_conv_batchnorm_relu_tosa_MI(self):
-        model = ComboConvBatchnormRelu()
+    def test_conv_batchnorm_relu6_tosa_MI(self):
+        model = ComboConvBatchnormRelu6()
         self._test_conv_combo_tosa_MI_pipeline(model, model.get_inputs())
 
-    # TODO(MLETORCH-85): Investigate numerical issue. This diff is present in legacy
-    # testcase as well (and also not tested). For now, just increase the
-    # tolerance, such that we don't skip the test entirely (i.e. we maintain
-    # functionality).
-    def test_conv_batchnorm_relu_tosa_BI(self):
-        model = ComboConvBatchnormRelu()
-        self._test_conv_combo_tosa_BI_pipeline(
-            model, model.get_inputs(), atol=1.0, rtol=1.0
+    def test_conv_batchnorm_relu6_tosa_BI(self):
+        model = ComboConvBatchnormRelu6()
+        self._test_conv_combo_tosa_BI_pipeline(model, model.get_inputs())
+
+    def test_conv_batchnorm_relu6_u55_BI(self):
+        model = ComboConvBatchnormRelu6()
+        self._test_conv_combo_ethos_BI_pipeline(
+            model, common.get_u55_compile_spec(), model.get_inputs()
         )
 
-    @unittest.skipIf(
-        not common.VELA_INSTALLED,
-        "There is no point in running U55 tests if the Vela tool is not installed",
-    )
-    def test_conv_batchnorm_relu_u55_BI(self):
-        model = ComboConvBatchnormRelu()
-        self._test_conv_combo_u55_BI_pipeline(model, model.get_inputs())
+    def test_conv_batchnorm_relu_u85_BI(self):
+        model = ComboConvBatchnormRelu6()
+        self._test_conv_combo_ethos_BI_pipeline(
+            model,
+            common.get_u85_compile_spec(),
+            model.get_inputs(),
+        )
+
+    ##################
+    ## Conv + ReLU6 ##
+    ##################
+    @parameterized.expand(ComboConvRelu6.test_data)
+    def test_conv_relu6_tosa_MI(self, test_data: torch.Tensor):
+        model = ComboConvRelu6()
+        test_data = (test_data,)
+        self._test_conv_combo_tosa_MI_pipeline(model, test_data)
+
+    @parameterized.expand(ComboConvRelu6.test_data)
+    def test_conv_relu6_tosa_BI(self, test_data: torch.Tensor):
+        model = ComboConvRelu6()
+        test_data = (test_data,)
+        self._test_conv_combo_tosa_BI_pipeline(model, test_data)
+
+    @parameterized.expand(ComboConvRelu6.test_data)
+    def test_conv_relu6_u55_BI(self, test_data: torch.Tensor):
+        model = ComboConvRelu6()
+        test_data = (test_data,)
+        self._test_conv_combo_ethos_BI_pipeline(
+            model, common.get_u55_compile_spec(permute_memory_to_nhwc=True), test_data
+        )
+
+    @parameterized.expand(ComboConvRelu6.test_data)
+    def test_conv_relu6_u85_BI(self, test_data: torch.Tensor):
+        model = ComboConvRelu6()
+        test_data = (test_data,)
+        self._test_conv_combo_ethos_BI_pipeline(
+            model, common.get_u85_compile_spec(permute_memory_to_nhwc=True), test_data
+        )
 
     ###############################
     ## Block bottleneck residual ##
@@ -247,19 +339,59 @@ class TestConvCombos(unittest.TestCase):
         model = ComboBlockBottleneckResidual()
         self._test_conv_combo_tosa_MI_pipeline(model, model.get_inputs())
 
-    # TODO(MLETORCH-85): Investigate numerical issue. This diff was present in legacy
-    # testcase as well. For now, just increase the tolerance, such that
-    # we don't skip the test entirely (i.e. we maintain functionality).
+    # TODO: Investigate flakyness (MLTORCH-307)
+    @pytest.mark.flaky(reruns=3)
     def test_block_bottleneck_residual_tosa_BI(self):
         model = ComboBlockBottleneckResidual()
-        self._test_conv_combo_tosa_BI_pipeline(
-            model, model.get_inputs(), atol=1.0, rtol=1.0
-        )
+        self._test_conv_combo_tosa_BI_pipeline(model, model.get_inputs())
 
-    @unittest.skipIf(
-        not common.VELA_INSTALLED,
-        "There is no point in running U55 tests if the Vela tool is not installed",
-    )
     def test_block_bottleneck_residual_u55_BI(self):
         model = ComboBlockBottleneckResidual()
-        self._test_conv_combo_u55_BI_pipeline(model, model.get_inputs())
+        self._test_conv_combo_ethos_BI_pipeline(
+            model,
+            common.get_u55_compile_spec(permute_memory_to_nhwc=True),
+            model.get_inputs(),
+        )
+
+    def test_block_bottleneck_residual_u85_BI(self):
+        model = ComboBlockBottleneckResidual()
+        self._test_conv_combo_ethos_BI_pipeline(
+            model,
+            common.get_u85_compile_spec(permute_memory_to_nhwc=True),
+            model.get_inputs(),
+        )
+
+    ######################
+    ## Conv + AvgPool2d ##
+    ######################
+    @parameterized.expand(ComboConvAvgPool2d.test_data)
+    def test_conv_avgpool2d_tosa_MI(self, test_data: torch.Tensor):
+        model = ComboConvAvgPool2d()
+        test_data = (test_data,)
+        self._test_conv_combo_tosa_MI_pipeline(model, test_data)
+
+    @parameterized.expand(ComboConvAvgPool2d.test_data)
+    def test_conv_avgpool2d_tosa_BI(self, test_data: torch.Tensor):
+        model = ComboConvAvgPool2d()
+        test_data = (test_data,)
+        self._test_conv_combo_tosa_BI_pipeline(model, test_data)
+
+    @parameterized.expand(ComboConvAvgPool2d.test_data)
+    def test_conv_avgpool2d_u55_BI(self, test_data: torch.Tensor):
+        model = ComboConvAvgPool2d()
+        test_data = (test_data,)
+        self._test_conv_combo_ethos_BI_pipeline(
+            model,
+            common.get_u55_compile_spec(),
+            test_data,
+        )
+
+    @parameterized.expand(ComboConvAvgPool2d.test_data)
+    def test_conv_avgpool2d_u85_BI(self, test_data: torch.Tensor):
+        model = ComboConvAvgPool2d()
+        test_data = (test_data,)
+        self._test_conv_combo_ethos_BI_pipeline(
+            model,
+            common.get_u85_compile_spec(),
+            test_data,
+        )

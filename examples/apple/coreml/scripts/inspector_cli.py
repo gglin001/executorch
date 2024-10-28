@@ -1,37 +1,24 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
+# Copyright © 2024 Apple Inc. All rights reserved.
 #
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
+# Please refer to the license found in the LICENSE file in the root directory of the source tree.
 
 import argparse
-import json
 
-from typing import Any, Dict, Final, List, Tuple
+import sys
 
-from executorch.sdk import Inspector
-from executorch.sdk.inspector._inspector_utils import compare_results
+from pathlib import Path
 
-COREML_METADATA_KEYS: Final[List[Tuple[str, str]]] = [
-    ("operatorName", "coreml_operator"),
-    ("estimatedCost", "coreml_estimated_cost"),
-    ("preferredComputeUnit", "coreml_preferred_device"),
-    ("supportedComputeUnits", "coreml_supported_devices"),
-]
+from executorch.devtools import Inspector
+from executorch.devtools.inspector import compare_results
 
 
-def parse_coreml_delegate_metadata(delegate_metadatas: List[str]) -> Dict[str, Any]:
-    try:
-        coreml_metadata: Dict[str, Any] = json.loads(delegate_metadatas[0])
-        result: Dict[str, str] = {}
-        for col_key, col_name in COREML_METADATA_KEYS:
-            value = coreml_metadata.get(col_key, None)
-            if value is not None:
-                result[col_name] = value
-        return result
+def get_root_dir_path() -> Path:
+    return Path().resolve().parent.parent.parent.parent
 
-    except ValueError:
-        return {}
+
+sys.path.append(str((get_root_dir_path() / "examples").resolve()))
+
+from inspector_utils import convert_coreml_delegate_time, parse_coreml_delegate_metadata
 
 
 def main() -> None:
@@ -49,7 +36,7 @@ def main() -> None:
     parser.add_argument(
         "--debug_buffer_path",
         required=False,
-        help="Provide an optional buffer file path.",
+        help="Provide an optional debug buffer file path.",
     )
     parser.add_argument("--compare_results", action="store_true")
 
@@ -60,6 +47,7 @@ def main() -> None:
         etrecord=args.etrecord_path,
         debug_buffer_path=args.debug_buffer_path,
         delegate_metadata_parser=parse_coreml_delegate_metadata,
+        delegate_time_scale_converter=convert_coreml_delegate_time,
     )
     inspector.print_data_tabular(include_delegate_debug_data=True)
     if args.compare_results:

@@ -19,14 +19,15 @@ install_executorch_and_backend_lib() {
   cmake -DBUCK2="${BUCK2}" \
     -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK}/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI="${ANDROID_ABI}" \
-    -DANDROID_PLATFORM=android-23 \
     -DCMAKE_INSTALL_PREFIX=cmake-android-out \
     -DCMAKE_BUILD_TYPE=Release \
-    -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON \
     -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON \
+    -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON \
+    -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON \
     -DEXECUTORCH_BUILD_XNNPACK=ON \
-    -DEXECUTORCH_BUILD_OPTIMIZED=ON \
-    -DEXECUTORCH_BUILD_QUANTIZED=ON \
+    -DEXECUTORCH_BUILD_KERNELS_OPTIMIZED=ON \
+    -DEXECUTORCH_BUILD_KERNELS_QUANTIZED=ON \
+    -DEXECUTORCH_BUILD_KERNELS_CUSTOM=ON \
     -DXNNPACK_ENABLE_ARM_BF16=OFF \
     -Bcmake-android-out .
 
@@ -39,13 +40,15 @@ build_llama_runner() {
     cmake -DBUCK2="${BUCK2}" \
     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK"/build/cmake/android.toolchain.cmake  \
     -DANDROID_ABI="${ANDROID_ABI}" \
-    -DANDROID_PLATFORM=android-23 \
     -DCMAKE_INSTALL_PREFIX=cmake-android-out \
     -DCMAKE_BUILD_TYPE=Release -DPYTHON_EXECUTABLE=python \
-    -DEXECUTORCH_BUILD_OPTIMIZED=ON \
-    -Bcmake-android-out/examples/models/llama2 examples/models/llama2
+    -DEXECUTORCH_BUILD_XNNPACK=ON \
+    -DEXECUTORCH_BUILD_KERNELS_OPTIMIZED=ON \
+    -DEXECUTORCH_BUILD_KERNELS_QUANTIZED=ON \
+    -DEXECUTORCH_BUILD_KERNELS_CUSTOM=ON \
+    -Bcmake-android-out/examples/models/llama examples/models/llama
 
-    cmake --build cmake-android-out/examples/models/llama2 -j4 --config Release
+    cmake --build cmake-android-out/examples/models/llama -j4 --config Release
 }
 install_flatc_from_source
 install_executorch_and_backend_lib

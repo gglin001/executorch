@@ -24,7 +24,7 @@ rm -rf "$COREML_DIR_PATH/third-party"
 mkdir "$COREML_DIR_PATH/third-party"
 
 echo "${green}ExecuTorch: Cloning coremltools."
-git clone "https://github.com/apple/coremltools.git" $COREMLTOOLS_DIR_PATH
+git clone --depth 1 --branch 8.0 "https://github.com/apple/coremltools.git" $COREMLTOOLS_DIR_PATH
 cd $COREMLTOOLS_DIR_PATH
 
 STATUS=$?
@@ -47,17 +47,14 @@ cmake --build "$COREMLTOOLS_DIR_PATH/build" --parallel
 
 echo "${green}ExecuTorch: Installing coremltools."
 pip install "$COREMLTOOLS_DIR_PATH"
+# CoreMLTools have started supporting numpy 2.0,
+# but ExecuTorch example model test env is still using older transformers,
+# so for now we will need to downgrade numpy to 1.x
+# TODO: Remove this numpy downgrade once later transformers starts to be used
+pip install numpy==1.26.4
 STATUS=$?
 if [ $STATUS -ne 0 ]; then
     echo "${red}ExecuTorch: Failed to install coremltools."
-    exit 1
-fi
-
-echo "${green}ExecuTorch: Cloning ios-cmake."
-git clone https://github.com/leetal/ios-cmake.git "$COREML_DIR_PATH/third-party/ios-cmake"
-STATUS=$?
-if [ $STATUS -ne 0 ]; then
-    echo "${red}ExecuTorch: Failed to clone ios-cmake."
     exit 1
 fi
 
@@ -72,5 +69,5 @@ fi
 sh "$COREML_DIR_PATH/scripts/install_inmemoryfs.sh"
 
 echo "${green}ExecuTorch: Copying protobuf files."
-mkdir -p "$COREML_DIR_PATH/runtime/sdk/format/" 
-cp -rf "$PROTOBUF_FILES_DIR_PATH" "$COREML_DIR_PATH/runtime/sdk/format/" 
+mkdir -p "$COREML_DIR_PATH/runtime/sdk/format/"
+cp -rf "$PROTOBUF_FILES_DIR_PATH" "$COREML_DIR_PATH/runtime/sdk/format/"

@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import logging
 import operator
 from types import NoneType
 from typing import cast, List, Optional, Union
@@ -11,6 +12,7 @@ from typing import cast, List, Optional, Union
 import executorch.backends.vulkan.serialization.vulkan_graph_schema as vk_graph_schema
 
 import torch
+from executorch.exir.backend.utils import DelegateMappingBuilder
 
 from executorch.exir.tensor import TensorSpec
 from torch._export.utils import get_buffer, get_param, is_buffer, is_param
@@ -22,11 +24,18 @@ _Argument = Union[
     Node, NoneType, _ScalarType, TensorSpec, List[_ScalarType], List[Node], str
 ]
 
+logger: logging.Logger = logging.getLogger("")
+logger.setLevel(logging.INFO)
+
 
 class VkGraphBuilder:
-    def __init__(self, program: ExportedProgram) -> None:
+    def __init__(
+        self,
+        program: ExportedProgram,
+        delegate_mapping_builder: DelegateMappingBuilder,
+    ) -> None:
         self.program = program
-
+        self.delegate_mapping_builder = delegate_mapping_builder
         self.chain = []
         self.values = []
         self.input_ids = []
@@ -35,6 +44,9 @@ class VkGraphBuilder:
 
         # Mapping from Node to VkValue id
         self.node_to_value_ids = {}
+
+        # For logging
+        self.seen_ops = set()
 
     @staticmethod
     def get_vk_datatype(torch_dtype: torch.dtype) -> vk_graph_schema.VkDataType:
@@ -127,15 +139,21 @@ class VkGraphBuilder:
         return constant_id
 
     def create_node_value(self, node: Node) -> int:
+        # If the node has been marked as a scalar tensor, create a SymInt instead of a tensor
+        if node.meta.get("vkdg_is_scalar_tensor", False):
+            new_id = self.create_symint_value()
+            self.node_to_value_ids[node] = new_id
+            return new_id
+
         spec = node.meta.get("spec")
         if isinstance(spec, TensorSpec):
             constant_id = self.maybe_add_constant_tensor(node)
             new_id = self.create_tensor_value(spec, constant_id)
             self.node_to_value_ids[node] = new_id
             return new_id
-        elif isinstance(spec, tuple):
-            # Create a Value for each element in the tuple, wrap Values in a
-            # ValueList, and map the Node to the ValueList id.
+        elif isinstance(spec, list) or isinstance(spec, tuple):
+            # pyre-ignore[6]: pyre having hard time to infer Node type inside
+            # the container.
             new_id = self.create_value_list_value(spec)
             self.node_to_value_ids[node] = new_id
             return new_id
@@ -155,6 +173,11 @@ class VkGraphBuilder:
             self.values.append(vk_graph_schema.VkValue(vk_graph_schema.Int(scalar)))
         elif isinstance(scalar, float):
             self.values.append(vk_graph_schema.VkValue(vk_graph_schema.Double(scalar)))
+        return new_id
+
+    def create_symint_value(self) -> int:
+        new_id = len(self.values)
+        self.values.append(vk_graph_schema.VkValue(vk_graph_schema.SymInt(0)))
         return new_id
 
     def create_tensor_value(self, spec: TensorSpec, constant_id: int = -1) -> int:
@@ -202,7 +225,7 @@ class VkGraphBuilder:
             )
         return new_id
 
-    def create_value_list_value(self, arg: List[Node] | tuple) -> int:
+    def create_value_list_value(self, arg: tuple | list) -> int:
         self.values.append(
             vk_graph_schema.VkValue(
                 vk_graph_schema.ValueList(
@@ -230,6 +253,7 @@ class VkGraphBuilder:
             or isinstance(arg, torch.device)
             or isinstance(arg, torch.dtype)
             or isinstance(arg, torch.layout)
+            or isinstance(arg, torch.memory_format)
         ):
             return self.create_null_value()
         elif isinstance(arg, _ScalarType):
@@ -242,6 +266,8 @@ class VkGraphBuilder:
             # pyre-ignore[6]
             return self.create_scalar_list_value(arg)
         elif isinstance(arg, list) and isinstance(arg[0], Node):
+            return self.create_value_list_value(arg)
+        elif isinstance(arg, torch.fx.immutable_collections.immutable_list):
             # pyre-ignore[6]
             return self.create_value_list_value(arg)
         elif isinstance(arg, str):
@@ -250,6 +276,9 @@ class VkGraphBuilder:
             raise RuntimeError(f"Cannot create value for arg of type {type(arg)}")
 
     def process_placeholder_node(self, node: Node) -> None:
+        # ignores any tensors that don't get used in any ops
+        if len(node.users) == 0:
+            return None
         ids = self.create_node_value(node)
         if not self.is_param_node(node):
             if isinstance(ids, int):
@@ -272,6 +301,8 @@ class VkGraphBuilder:
     def process_call_function_node(self, node) -> None:
         operator_call_args = []
 
+        self.seen_ops.add(node.target)
+
         for i, schema_arg in enumerate(node.target._schema.arguments):
             if not schema_arg.kwarg_only and i < len(node.args):
                 function_arg = node.args[i]
@@ -286,9 +317,14 @@ class VkGraphBuilder:
 
         # Add output node
         operator_call_args.append(self.create_node_value(node))
-
+        operator_node_id = (
+            0
+            if not self.delegate_mapping_builder
+            else self.delegate_mapping_builder.insert_delegate_mapping_entry(node)
+        )
         self.chain.append(
             vk_graph_schema.OperatorCall(
+                node_id=operator_node_id,  # pyre-ignore[6]: this is going to be an int
                 name=node.target.__name__,
                 args=operator_call_args,
             ),
@@ -307,13 +343,14 @@ class VkGraphBuilder:
                 )
             self.output_ids.append(self.node_to_value_ids[out_node])
 
-    def process_node(self, node: Node) -> None:
+    def process_node(self, node: Node, call_node_debug_hdl: int) -> None:
         if node.op == "placeholder":
             self.process_placeholder_node(node)
         elif node.op == "call_function":
             if node.target == operator.getitem:
                 self.process_getitem_node(node)
             else:
+                node.meta["debug_handle"] = call_node_debug_hdl
                 self.process_call_function_node(node)
         elif node.op == "get_attr":
             self.process_getattr_node(node)
@@ -323,8 +360,14 @@ class VkGraphBuilder:
             raise AssertionError(f"Unsupported node op: {node.op}")
 
     def build_graph(self) -> vk_graph_schema.VkGraph:
+        call_node_debug_hdl = 0
         for node in self.program.graph_module.graph.nodes:
-            self.process_node(node)
+            self.process_node(node, call_node_debug_hdl)
+            call_node_debug_hdl += 1
+
+        logger.info("Operators included in this Vulkan partition: ")
+        for op in self.seen_ops:
+            logger.info(f"    {op.__name__}")
 
         return vk_graph_schema.VkGraph(
             version="0",

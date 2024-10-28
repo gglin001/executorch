@@ -16,8 +16,10 @@ cmake_install_executorch_lib() {
   rm -rf cmake-out
 
   retry cmake -DBUCK2="$BUCK2" \
+          -DCMAKE_CXX_STANDARD_REQUIRED=ON \
           -DCMAKE_INSTALL_PREFIX=cmake-out \
           -DCMAKE_BUILD_TYPE=Release \
+          -DEXECUTORCH_BUILD_EXECUTOR_RUNNER=OFF \
           -DOPTIMIZE_SIZE=ON \
           -DPYTHON_EXECUTABLE="$PYTHON_EXECUTABLE" \
           -Bcmake-out .
@@ -27,11 +29,14 @@ cmake_install_executorch_lib() {
 test_cmake_size_test() {
     retry cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=cmake-out -Bcmake-out/test test
 
-    echo "Build selective build test"
+    echo "Build size test"
     cmake --build cmake-out/test -j9 --config Release
 
-    echo 'Size of the binary:'
+    echo 'ExecuTorch with no ops binary size, unstripped:'
     ls -al cmake-out/test/size_test
+
+    echo 'ExecuTorch with portable ops binary size, unstripped:'
+    ls -al cmake-out/test/size_test_all_ops
 }
 
 if [[ -z $BUCK2 ]]; then

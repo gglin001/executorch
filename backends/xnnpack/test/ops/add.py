@@ -47,9 +47,7 @@ class TestAdd(unittest.TestCase):
             Tester(self.Add(), inputs)
             .export()
             .check_count({"torch.ops.aten.add.Tensor": 4})
-            .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 4})
-            .partition()
+            .to_edge_transform_and_lower()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(["executorch_exir_dialects_edge__ops_aten_add_Tensor"])
             .to_executorch()
@@ -58,22 +56,20 @@ class TestAdd(unittest.TestCase):
         )
 
     def test_fp16_add(self):
-        inputs = (torch.ones(1).to(torch.float16), torch.ones(1).to(torch.float16))
+        inputs = (torch.randn(1).to(torch.float16), torch.randn(1).to(torch.float16))
         self._test_add(inputs)
 
     def test_fp32_add(self):
-        inputs = (torch.ones(1), torch.ones(1))
+        inputs = (torch.randn(1), torch.randn(1))
         self._test_add(inputs)
 
     def test_fp32_add_constant(self):
         inputs = (torch.randn(4, 4, 4),)
         (
-            Tester(self.AddConstant(torch.ones(4, 4, 4)), inputs)
+            Tester(self.AddConstant(torch.randn(4, 4, 4)), inputs)
             .export()
             .check_count({"torch.ops.aten.add.Tensor": 4})
-            .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 4})
-            .partition()
+            .to_edge_transform_and_lower()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(["executorch_exir_dialects_edge__ops_aten_add_Tensor"])
             .to_executorch()
@@ -84,19 +80,16 @@ class TestAdd(unittest.TestCase):
     def test_qs8_add_constant(self):
         inputs = (torch.randn(4, 4, 4),)
         (
-            Tester(self.AddConstant(torch.ones(4, 4, 4)), inputs)
+            Tester(self.AddConstant(torch.randn(4, 4, 4)), inputs)
             .quantize()
             .export()
             .check_count({"torch.ops.aten.add.Tensor": 4})
-            .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 4})
-            .partition()
+            .to_edge_transform_and_lower()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(["executorch_exir_dialects_edge__ops_aten_add_Tensor"])
             .to_executorch()
             .serialize()
-            .run_method()
-            .compare_outputs()
+            .run_method_and_compare_outputs()
         )
 
     def test_qs8_add(self):
@@ -107,9 +100,7 @@ class TestAdd(unittest.TestCase):
             .export()
             .check_count({"torch.ops.aten.add.Tensor": 4})
             .check(["torch.ops.quantized_decomposed"])
-            .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 4})
-            .partition()
+            .to_edge_transform_and_lower()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(
                 [
@@ -130,9 +121,7 @@ class TestAdd(unittest.TestCase):
             .export()
             .check_count({"torch.ops.aten.add.Tensor": 1})
             .check(["torch.ops.quantized_decomposed"])
-            .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 1})
-            .partition()
+            .to_edge_transform_and_lower()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(
                 [
@@ -153,9 +142,7 @@ class TestAdd(unittest.TestCase):
             .export()
             .check_count({"torch.ops.aten.add.Tensor": 4})
             .check(["torch.ops.quantized_decomposed"])
-            .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 4})
-            .partition()
+            .to_edge_transform_and_lower()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .check_not(
                 [
@@ -180,10 +167,7 @@ class TestAdd(unittest.TestCase):
             .export()
             .check_count({"torch.ops.aten.add.Tensor": 1})
             .check_count({"torch.ops.aten.relu.default": 1})
-            .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 1})
-            .check_count({"executorch_exir_dialects_edge__ops_aten_relu_default": 1})
-            .partition()
+            .to_edge_transform_and_lower()
             .check_not(["executorch_exir_dialects_edge__ops_aten_add_Tensor"])
             .check_not(["executorch_exir_dialects_edge__ops_aten_relu_default"])
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
@@ -201,10 +185,7 @@ class TestAdd(unittest.TestCase):
             .check_count({"torch.ops.aten.add.Tensor": 1})
             .check_count({"torch.ops.aten.relu.default": 1})
             .check(["torch.ops.quantized_decomposed"])
-            .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 1})
-            .check_count({"executorch_exir_dialects_edge__ops_aten_relu_default": 1})
-            .partition()
+            .to_edge_transform_and_lower()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .to_executorch()
             .serialize()
@@ -247,10 +228,7 @@ class TestAdd(unittest.TestCase):
                 {"torch.ops.aten.add.Tensor": 1, "torch.ops.aten.relu.default": 1}
             )
             .check(["torch.ops.quantized_decomposed"])
-            .to_edge()
-            .check_count({"executorch_exir_dialects_edge__ops_aten_add_Tensor": 1})
-            .check_count({"executorch_exir_dialects_edge__ops_aten_relu_default": 1})
-            .partition()
+            .to_edge_transform_and_lower()
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .to_executorch()
             .serialize()

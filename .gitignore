@@ -1,6 +1,7 @@
 .hypothesis
 buck-out/
-cmake-out/
+cmake-out*
+.DS_Store
 cmake-android-out/
 cmake-out-android/
 cmake-ios-out/
@@ -11,7 +12,10 @@ __pycache__/
 
 # Any exported models and profiling outputs
 *.pte
+*.model
+!test_tiktoken_tokenizer.model
 *.bin
+!test_bpe_tokenizer.bin
 
 # Editor temporaries
 *.swa
@@ -37,3 +41,4 @@ core
 executorch
 .vscode/
 CMakeUserPresets.json
+*.idea

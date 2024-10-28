@@ -39,7 +39,6 @@ We generate the model file for the ExecuTorch runtime in Android Demo App.
 For delegating DeepLab v3 to XNNPACK backend, please do the following to export the model:
 
 ```bash
-export FLATC_EXECUTABLE=$(realpath third-party/flatbuffers/cmake-android-out/flatc)
 python3 -m examples.xnnpack.aot_compiler --model_name="dl3" --delegate
 mkdir -p examples/demo-apps/android/ExecuTorchDemo/app/src/main/assets/
 cp dl3_xnnpack_fp32.pte examples/demo-apps/android/ExecuTorchDemo/app/src/main/assets/
@@ -54,7 +53,7 @@ For delegating to Qualcomm Hexagon NPU, please follow the tutorial [here](build-
 After generating the model, copy the model to `assets` directory.
 
 ```bash
-python -m examples.qualcomm.scripts.deeplab_v3 -b build_android -m SM8450 -s <adb_connected_device_serial>
+python -m examples.qualcomm.scripts.deeplab_v3 -b build-android -m SM8450 -s <adb_connected_device_serial>
 cp deeplab_v3/dlv3_qnn.pte examples/demo-apps/android/ExecuTorchDemo/app/src/main/assets/
 ```
 
@@ -79,6 +78,8 @@ cmake . -DCMAKE_INSTALL_PREFIX=cmake-android-out \
   -DEXECUTORCH_BUILD_XNNPACK=ON \
   -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON \
   -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON \
+  -DEXECUTORCH_BUILD_EXTENSION_RUNNER_UTIL=ON \
+  -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON \
   -Bcmake-android-out
 
 cmake --build cmake-android-out -j16 --target install
@@ -120,6 +121,8 @@ cmake . -DCMAKE_INSTALL_PREFIX=cmake-android-out \
     -DQNN_SDK_ROOT="${QNN_SDK_ROOT}" \
     -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON \
     -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON \
+    -DEXECUTORCH_BUILD_EXTENSION_RUNNER_UTIL=ON \
+    -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON \
     -Bcmake-android-out
 
 cmake --build cmake-android-out -j16 --target install

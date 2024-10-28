@@ -38,12 +38,12 @@ namespace {
  */
 template <typename CTYPE>
 void gelu(
-    exec_aten::RuntimeContext& context,
+    executorch::runtime::KernelRuntimeContext& context,
     const Tensor& input,
     string_view approximate,
     Tensor& output) {
-  const CTYPE* in_data = input.data_ptr<CTYPE>();
-  CTYPE* out_data = output.data_ptr<CTYPE>();
+  const CTYPE* in_data = input.const_data_ptr<CTYPE>();
+  CTYPE* out_data = output.mutable_data_ptr<CTYPE>();
   size_t lim = input.numel();
 
   // TODO: Add fast path for tanh using sleef's tanh
@@ -110,7 +110,7 @@ void gelu(
  * gelu.out(Tensor self, str approximate, *, Tensor(a!) out) -> Tensor(a!)
  */
 Tensor& opt_gelu_out(
-    RuntimeContext& context,
+    KernelRuntimeContext& context,
     const Tensor& input,
     string_view approximate,
     Tensor& out) {

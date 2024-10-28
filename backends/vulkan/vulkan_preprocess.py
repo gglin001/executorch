@@ -4,7 +4,21 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-strict
+
 from typing import final, List
+
+from executorch.backends.transforms.addmm_mm_to_linear import AddmmToLinearTransform
+from executorch.backends.transforms.fuse_batch_norm_with_conv import (
+    FuseBatchNormWithConvPass,
+)
+from executorch.backends.transforms.fuse_conv_with_clamp import FuseClampPass
+from executorch.backends.transforms.fuse_dequant_linear import FuseDequantLinearPass
+from executorch.backends.transforms.fuse_view_copy import FuseViewCopyTransform
+from executorch.backends.transforms.remove_clone_ops import RemoveCloneOpsTransform
+
+from executorch.backends.vulkan._passes import RemoveLocalScalarDenseOpsTransform
+from executorch.backends.vulkan._passes.insert_prepack_nodes import insert_prepack_nodes
 
 from executorch.backends.vulkan.serialization.vulkan_graph_builder import VkGraphBuilder
 from executorch.backends.vulkan.serialization.vulkan_graph_serialize import (
@@ -17,12 +31,17 @@ from executorch.exir.backend.backend_details import (
     ExportedProgram,
     PreprocessResult,
 )
+from executorch.exir.backend.utils import DelegateMappingBuilder
 
 from executorch.exir.passes import MemoryPlanningPass, SpecPropPass
 
 from executorch.exir.passes.sym_shape_eval_pass import ConstraintBasedSymShapeEvalPass
 
 from executorch.exir.program._program import _copy_module
+
+from torch.export._remove_auto_functionalized_pass import (
+    unsafe_remove_auto_functionalized_pass,
+)
 
 DEFAULT_DEBUG_HANDLE = 65535
 
@@ -36,10 +55,19 @@ class VulkanBackend(BackendDetails):
         program: ExportedProgram,
         module_compile_spec: List[CompileSpec],
     ) -> PreprocessResult:
+        program = unsafe_remove_auto_functionalized_pass(program)
+
         passes = [
+            RemoveCloneOpsTransform(),
+            AddmmToLinearTransform(),
+            FuseDequantLinearPass(),
+            FuseViewCopyTransform(),
+            FuseBatchNormWithConvPass(program),
+            FuseClampPass(),
             SpecPropPass(),
             ConstraintBasedSymShapeEvalPass(),
-            MemoryPlanningPass("greedy"),
+            RemoveLocalScalarDenseOpsTransform(),
+            MemoryPlanningPass(),
         ]
 
         new_gm = program.graph_module
@@ -57,11 +85,16 @@ class VulkanBackend(BackendDetails):
 
         _copy_module(program.graph_module, new_gm)
 
-        graph_builder = VkGraphBuilder(program)
+        program = insert_prepack_nodes(program)
+
+        graph_builder = VkGraphBuilder(
+            program, DelegateMappingBuilder(generated_identifiers=True)
+        )
         vk_graph = graph_builder.build_graph()
 
         return PreprocessResult(
             processed_bytes=serialize_vulkan_graph(
                 vk_graph, graph_builder.const_tensors, []
             ),
+            debug_handle_map=graph_builder.delegate_mapping_builder.get_delegate_mapping(),
         )

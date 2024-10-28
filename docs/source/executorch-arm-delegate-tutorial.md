@@ -48,14 +48,9 @@ In the following sections we will walk through the steps to download each of the
 
 ## Set Up the Developer Environment
 
-In this section, we will do a one-time setup, like downloading and installing necessary software, for the platform support files needed to run ExecuTorch programs in this tutorial. There are two approaches available:
+In this section, we will do a one-time setup, like downloading and installing necessary software, for the platform support files needed to run ExecuTorch programs in this tutorial.
 
-1. Method 1: Use the `examples/arm/setup.sh` script to pull each item in an automated fashion (recommended). It is recommended to run the script in a conda environment. Upon successful execution, you can directly go to [the next step](#convert-the-pytorch-model-to-the-pte-file).
-2. Method 2: Follow the guide step by step to understand all the components and the logic of the script. You may want to use this method if you intend to change the behavior of the flow significantly.
-
-```{tip}
-In the ExecuTorch repository we have a functioning script which follows the exact same steps to speed things up. It is located at `examples/arm/setup.sh`. Feel free to use that instead if it is convenient, or use it as a reference if some of the steps in the manual instruction aren't very clear.
-```
+For that we will use the `examples/arm/setup.sh` script to pull each item in an automated fashion. It is recommended to run the script in a conda environment. Upon successful execution, you can directly go to [the next step](#convert-the-pytorch-model-to-the-pte-file).
 
 As mentioned before, we currently support only Linux based platforms with x86_64 or aarch64 processor architecture. Let’s make sure we are indeed on a supported platform.
 
@@ -67,7 +62,7 @@ uname -m
 # x86_64 or aarch64
 ```
 
-Let's create an empty directory, and use this as a top level development directory.
+Next we will walk through the steps performed by the `setup.sh` script to better understand the development setup.
 
 ### Download and Set Up the Corstone-300 FVP
 
@@ -77,131 +72,25 @@ Fixed Virtual Platforms (FVPs) are pre-configured, functionally accurate simulat
  By downloading and running the FVP software, you will be agreeing to the FVP [End-user license agreement (EULA)](https://developer.arm.com/downloads/-/arm-ecosystem-fvps/eula).
 ```
 
-To download, we can either download `Corstone-300 Ecosystem FVP` from [here](https://developer.arm.com/downloads/-/arm-ecosystem-fvps). Alternatively, you can download the same version we tested with like this,
-
-```bash
-# for aarch64
-curl \
-    --output FVP_cs300.tgz \
-    'https://developer.arm.com/-/media/Arm%20Developer%20Community/Downloads/OSS/FVP/Corstone-300/FVP_Corstone_SSE-300_11.22_35_Linux64_armv8l.tgz?rev=b083dc5ac9c546899fbb7ccd67b74c17&hash=BFE589289ECF12B07192636382C15C01'
-
-# for x86_64
-curl \
-    --output FVP_cs300.tgz \
-    'https://developer.arm.com/-/media/Arm%20Developer%20Community/Downloads/OSS/FVP/Corstone-300/FVP_Corstone_SSE-300_11.22_20_Linux64.tgz?rev=018659bd574f4e7b95fa647e7836ccf4&hash=22A79103C6FA5FFA7AFF3BE0447F3FF9'
-```
-
-Now, extract the `FVP_cs300.tgz` file in a new dir, and run the provided script which will install the FVP.
-
-```bash
-./FVP_Corstone_SSE-300.sh          \
-   --i-agree-to-the-contained-eula \
-   --force                         \
-   --destination ./                \
-   --quiet                         \
-   --no-interactive
-```
-
-Once successful, let's make sure the FVP simulator is available on the PATH for later use.
-
-```bash
-# for x86-64 hosts
-export PATH=${PATH}:<install_dir>/FVP/models/Linux64_GCC-9.3
-# for aarch64 hosts
-export PATH=${PATH}:<install_dir>/FVP/models/Linux64_armv8l_GCC-9.3/
-
-hash FVP_Corstone_SSE-300_Ethos-U55 # To make sure we are ready to use
-```
+To download, we can either download `Corstone-300 Ecosystem FVP` from [here](https://developer.arm.com/downloads/-/arm-ecosystem-fvps). or `setup.sh` script will does that for you under `setup_fvp` function.
 
 ### Download and Install the Arm GNU AArch32 Bare-Metal Toolchain
 
 Similar to the FVP, we would also need a tool-chain to cross-compile ExecuTorch runtime, executor-runner bare-metal application, as well as the rest of the bare-metal stack for Cortex-M55 CPU available on the Corstone-300 platform.
 
-These toolchains are available [here](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads). We will be using GCC 12.3 targeting `arm-none-eabi` here for our tutorial. Just like FVP, to download the same version as we tested with in the top-level development dir,
-
-```bash
-# for aarch64
-curl \
-    --output gcc.tar.xz \
-    'https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu/12.3.rel1/binrel/arm-gnu-toolchain-12.3.rel1-aarch64-arm-none-eabi.tar.xz'
-
-# for x86_64
-curl \
-    --output gcc.tar.xz \
-    'https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu/12.3.rel1/binrel/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi.tar.xz'
-```
-
-Once downloaded, you can extract its contents in a new dir. Then, let's make sure the toolchain is available on the PATH for later use.
-
-```bash
-export PATH=${PATH}:/<install_dir>/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi/bin
-export PATH=${PATH}:/<install_dir>/arm-gnu-toolchain-12.3.rel1-aarch64-arm-none-eabi/bin
-
-hash arm-none-eabi-gcc # To make sure we are ready to use
-```
+These toolchains are available [here](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads). We will be using GCC 12.3 targeting `arm-none-eabi` here for our tutorial. Just like FVP, `setup.sh` script will down the toolchain for you. See `setup_toolchain` function.
 
 ### Setup the Arm Ethos-U Software Development
 
-This git repository is the root directory for all Arm Ethos-U software. It is to help us download required repositories and place them in a tree structure. In the top-level devlopment dir,
-
-```bash
-# Download the repo
-git clone https://review.mlplatform.org/ml/ethos-u/ethos-u
-cd ethos-u
-
-# To align with the version we have tested
-git reset --hard 0995223100e3da8011700f58e491f1bf59511e3c
-
-# Download the necessary repos and properly install them
-./fetch_externals.py fetch
-
-# Download the Vela compiler
-cd .. # To the top-level development dir
-git clone https://review.mlplatform.org/ml/ethos-u/ethos-u-vela
-```
+This git repository is the root directory for all Arm Ethos-U software. It is to help us download required repositories and place them in a tree structure. See `setup_ethos_u` function of the setup script for more details.
 
 Once this is done, you should have a working FVP simulator, a functioning toolchain for cross compilation, and the Ethos-U software development setup ready for the bare-metal developement.
 
-#### Applying Local Patches
-Since this is under active development, we have some patches for the Arm Ethos-u software development kit. Let's apply them on the download SDK and the Vela compiler.
-
-```bash
-cd ethos-u # this is the top level Ethos-U software directory
-
-# Let's patch core_platform repo
-cd core_platform
-git reset --hard 204210b1074071532627da9dc69950d058a809f4
-git am -3 <path_to>/executorch/examples/arm/ethos-u-setup/core_platform/patches/*.patch
-cd ../.. # To the top-level development dir
-
-# Let's now patch the vela compiler
-cd ethos-u-vela
-git reset --hard 00a15db3e1a188b25065d095152d701f4394cdc5
-git am -3 <path_to>/executorch/examples/arm/ethos-u-setup/ethos-u-vela/patches/*.patch
-```
-
 ### Install the Vela Compiler
-Once the patching is done, let's finish the setup by installing the Vela compiler.
-
-```bash
-# still in the ethos-u-vela directory
-pip install .
-```
+Once this is done, the script will finish the setup by installing the Vela compiler for you, details are in `setup_vela` function.
 
 ### Install the TOSA reference model
-```bash
-git clone https://review.mlplatform.org/tosa/reference_model -b v0.80.0
-cd reference_model
-git submodule update --init --recursive
-mkdir -p build
-cd build
-cmake ..
-n=$(nproc)
-make -j"$((n - 5))"
-cd reference_model # Within the build directory
-# Add tosa_reference_model to the path
-export PATH=${PATH}:`pwd`
-```
+This is the last step of the setup process, using `setup_tosa_reference_model` function `setup.sh` script will install TOSA reference model for you.
 
 At the end of the setup, if everything goes well, your top level devlopement dir might look something like this,
 
@@ -237,6 +126,8 @@ We will use a couple of simple PyTorch Modules to explore the end-to-end flow. T
 This is a very simple PyTorch module with just one [Softmax](https://pytorch.org/docs/stable/generated/torch.nn.Softmax.html#torch.nn.Softmax) operator.
 
 ```python
+import torch
+
 class SoftmaxModule(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -281,13 +172,24 @@ Keep the inputs and outputs to these modules in mind. When we will lower and run
 We need to be aware of data types for running networks on the Ethos-U55 as it is an integer only processor. For this example we use integer types explicitly, for typical use of such a flow networks are built and trained in floating point, and then are quantized from floating point to integer for efficient inference.
 ```
 
+#### MobileNetV2 Module
+[MobileNetV2](https://arxiv.org/abs/1801.04381) is a commonly in-production used network for edge and mobile devices.
+It's also available as a default model in [torchvision](https://github.com/pytorch/vision), so we can load it with the sample code below.
+```
+from torchvision.models import mobilenet_v2  # @manual
+from torchvision.models.mobilenetv2 import MobileNet_V2_Weights
+
+mv2 = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
+```
+For more details, you can refer to the code snippet [here](https://github.com/pytorch/executorch/blob/2354945d47f67f60d9a118ea1a08eef8ba2364b5/examples/models/mobilenet_v2/model.py#L18).
+
 ### Non-delegated Workflow
 
 In the ExecuTorch AoT pipeline, one of the options is to select a backend. ExecuTorch offers a variety of different backends. Selecting backend is optional, it is typically done to target a particular mode of acceleration or hardware for a given model compute requirements. Without any backends, ExecuTorch runtime will fallback to using, available by default, a highly portable set of operators.
 
 It's expected that on platforms with dedicated acceleration like the Ethos-U55, that the non-delegated flow is used for two primary cases:
-1. When the network is designed to be very small and best suited to run on the Cortex-M alone
-1. When the network has a mix of operations that can target the NPU and those that can't, e.g. the Ethos-U55 supports integer operations and so floating point softmax will fall back to execute on the CPU
+1. When the network is designed to be very small and best suited to run on the Cortex-M alone.
+2. When the network has a mix of operations that can target the NPU and those that can't, e.g. the Ethos-U55 supports integer operations and so floating point softmax will fall back to execute on the CPU.
 
 In this flow, without any backend delegates, to illustrate the portability of the ExecuTorch runtime, as well as of the operator library we will skip specifying the backend during the `.pte` generation.
 
@@ -305,7 +207,11 @@ Working with Arm, we introduced a new Arm backend delegate for ExecuTorch. This 
 By including a following step during the ExecuTorch AoT export pipeline to generate the `.pte` file, we can enable this backend delegate.
 
 ```python
-graph_module_edge.exported_program = to_backend(model.exported_program, ArmPartitioner())
+from executorch.backends.arm.arm_backend import generate_ethosu_compile_spec
+
+graph_module_edge.exported_program = to_backend(
+    model.exported_program,
+    ArmPartitioner(generate_ethosu_compile_spec("ethos-u55-128")))
 ```
 
 Similar to the non-delegate flow, the same script will server as a helper utility to help us generate the `.pte` file. Notice the `--delegate` option to enable the `to_backend` call.
@@ -315,15 +221,47 @@ python3 -m examples.arm.aot_arm_compiler --model_name="add" --delegate
 # should produce ./add_arm_delegate.pte
 ```
 
-At the end of this, we should have two different `.pte` files. First one with the [SoftmaxModule](#softmaxmodule), without any backend delegates. And the second one with the [AddModule](#addmodule), and with Arm Ethos-U backend delegate enabled. Now let's try to run these `.pte` files on a Corstone-300 platform in a bare-metal environment.
+### Delegated Quantized Workflow
+Before generating the `.pte` file for delegated quantized networks like MobileNetV2, we need to build the `quantized_ops_aot_lib`
+
+```bash
+SITE_PACKAGES="$(python3 -c 'from distutils.sysconfig import get_python_lib; print(get_python_lib())')"
+CMAKE_PREFIX_PATH="${SITE_PACKAGES}/torch"
+
+cd <executorch_root_dir>
+mkdir -p cmake-out-aot-lib
+cmake -DCMAKE_BUILD_TYPE=Release \
+    -DEXECUTORCH_BUILD_XNNPACK=OFF \
+    -DEXECUTORCH_BUILD_KERNELS_QUANTIZED=ON \
+    -DEXECUTORCH_BUILD_KERNELS_QUANTIZED_AOT=ON \
+    -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
+    -DPYTHON_EXECUTABLE=python3 \
+-Bcmake-out-aot-lib \
+    "${et_root_dir}"
+
+n=$(nproc)
+cmake --build cmake-out-aot-lib -j"$((n - 5))" -- quantized_ops_aot_lib
+```
+
+After the `quantized_ops_aot_lib` build, we can run the following script to generate the `.pte` file
+```bash
+python3 -m examples.arm.aot_arm_compiler --model_name="mv2" --delegate --quantize --so_library="$(find cmake-out-aot-lib -name libquantized_ops_aot_lib.so)"
+# should produce ./mv2_arm_delegate.pte.pte
+```
+
+<br />
+
+At the end of this, we should have three different `.pte` files.
+
+- The first one contains the [SoftmaxModule](#softmaxmodule), without any backend delegates.
+- The second one contains the [AddModule](#addmodule), with Arm Ethos-U backend delegate enabled.
+- The third one contains the [quantized MV2Model](#mv2module), with the Arm Ethos-U backend delegate enabled as well.
+
+Now let's try to run these `.pte` files on a Corstone-300 platform in a bare-metal environment.
 
 ## Getting a Bare-Metal Executable
 
-In this section, we will go over steps that you need to go through to build the runtime application. This then run on the target device.
-
-```{tip}
-In the executorch repository we have a functioning script which does the exact same steps. It is located at `executorch/examples/arm/run.sh`. Feel free to use that instead if it is convenient, or use it as a reference if some of the steps in the manual instruction aren't very clear.
-```
+In this section, we will go over steps that you need to go through to build the runtime application. This then run on the target device. In the executorch repository we have a functioning script which does the exact same steps. It is located at `executorch/examples/arm/run.sh`. We will use that to build necessary pieces and finally run the previously generated PTE file on an FVP.
 
 Also before we get started, make sure that you have completed ExecuTorch cmake build setup, and the instructions to setup the development environment described [earlier](#set-up-the-developer-environment).
 
@@ -346,43 +284,11 @@ To run a `.pte` file with the Arm backend delegate call instructions, we will ne
 - `libexecutorch_delegate_ethos_u.a`
 
 
-To generate these libraries, use following commands,
+These libraries are generated in `build_executorch` function of the `run.sh` script.
 
-```bash
-# Empty and already created
-cd <executorch_source_root_dir>
+In this function, `EXECUTORCH_SELECT_OPS_LIST` will decide the number of portable operators included in the build and are available at runtime. It must match with `.pte` file's requirements, otherwise you will get `Missing Operator` error at runtime.
 
-toolchain_cmake=<executorch_source_root_dir>/examples/arm/ethos-u-setup/arm-none-eabi-gcc.cmake
-
-cmake                                                 \
-    -DBUCK2=${buck2}                                  \
-    -DCMAKE_INSTALL_PREFIX=<executorch_build_dir>     \
-    -DEXECUTORCH_BUILD_EXECUTOR_RUNNER=OFF            \
-    -DCMAKE_BUILD_TYPE=Release                        \
-    -DEXECUTORCH_ENABLE_LOGGING=ON                    \
-    -DEXECUTORCH_BUILD_ARM_BAREMETAL=ON               \
-    -DFLATC_EXECUTABLE="$(which flatc)"               \
-    -DCMAKE_TOOLCHAIN_FILE="${toolchain_cmake}"       \
-    -B<executorch_build_dir>                          \
-    <executorch_source_root_dir>
-
-cmake --build <executorch_build_dir> --target install --config Release VERBOSE=1
-
-cmake                                                 \
-    -DCMAKE_INSTALL_PREFIX=<executorch_build_dir>     \
-    -DCMAKE_BUILD_TYPE=Release                        \
-    -DEXECUTORCH_SELECT_OPS_LIST="aten::_softmax.out" \
-    -DCMAKE_TOOLCHAIN_FILE="${toolchain_cmake}"       \
-    -B<executorch_build_dir>/examples/arm             \
-    <executorch_source_root_dir>/examples/arm
-
-cmake --build <executorch_build_dir>/examples/arm --config Release
-
-```
-
-`EXECUTORCH_SELECT_OPS_LIST` will decide the number of portable operators included in the build and are available at runtime. It must match with `.pte` file's requirements, otherwise you will get `Missing Operator` error at runtime.
-
-For example, here in the command line above, to run SoftmaxModule, we only included the softmax CPU operator. Similarly, to run AddModule in a non-delegated manner you will need add op and so on. As you might have already realized, for the delegated operators, which will be executed by the Arm backend delegate, we do not need to include those operators in this list. This is only for *non-delegated* operators.
+For example, there  in the command line above, to run SoftmaxModule, we only included the softmax CPU operator. Similarly, to run AddModule in a non-delegated manner you will need add op and so on. As you might have already realized, for the delegated operators, which will be executed by the Arm backend delegate, we do not need to include those operators in this list. This is only for *non-delegated* operators.
 
 ### Building the executor_runner Bare-Metal Application
 
@@ -390,29 +296,16 @@ The SDK dir is the same one prepared [earlier](#setup-the-arm-ethos-u-software-d
 
 Note, you have to generate a new `executor-runner` binary if you want to change the model or the `.pte` file. This constraint is from the constrained bare-metal runtime environment we have for Corstone-300 platform.
 
-```bash
-
-cd <ethos-u-sdk-dir>/core_platform/
-
-cmake                                                    \
-    -DCMAKE_TOOLCHAIN_FILE="${toolchain_cmake}"          \
-    -B build targets/corstone-300                        \
-    -DET_DIR_PATH:PATH=<executorch_source_root_dir>      \
-    -DET_BUILD_DIR_PATH:PATH=<executorch_build_dir>      \
-    -DET_PTE_FILE_PATH:PATH=<path_to_pte_file_of_choice> \
-    -DPYTHON_EXECUTABLE=$(which python3)
-
-cmake --build build -- executor_runner
-```
+This is performed by the `build_executorch_runner` function in `run.sh`.
 
 ## Running on Corstone-300 FVP Platform
 
 Once the elf is prepared, regardless of the `.pte` file variant is used to generate the bare metal elf, you can run in with following command,
 
 ```bash
-ethos_u_build_dir=<ethos-u-sdk-dir>/core_platform/build/
+ethos_u_build_dir=examples/arm/executor_runner/
 
-elf=$(find ${ethos_u_build_dir} -name "executor_runner.elf")
+elf=$(find ${ethos_u_build_dir} -name "arm_executor_runner")
 
 FVP_Corstone_SSE-300_Ethos-U55                          \
     -C ethosu.num_macs=128                              \
@@ -484,12 +377,45 @@ EXITTHESIM
 Info: Simulation is stopping. Reason: CPU time has been exceeded.
 ```
 
+Similarily we can get the following output for running the [MV2Model](#mv2module)
+
+```
+    Ethos-U rev 136b7d75 --- Apr 12 2023 13:44:01
+    (C) COPYRIGHT 2019-2023 Arm Limited
+    ALL RIGHTS RESERVED
+
+I executorch:arm_executor_runner.cpp:60] Model in 0x70000000 $
+I executorch:arm_executor_runner.cpp:66] Model PTE file loaded. Size: 4556832 bytes.
+I executorch:arm_executor_runner.cpp:77] Model buffer loaded, has 1 methods
+I executorch:arm_executor_runner.cpp:85] Running method forward
+I executorch:arm_executor_runner.cpp:109] Setting up planned buffer 0, size 752640.
+I executorch:ArmBackendEthosU.cpp:49] ArmBackend::init 0x70000060
+I executorch:arm_executor_runner.cpp:130] Method loaded.
+I executorch:arm_executor_runner.cpp:132] Preparing inputs...
+I executorch:arm_executor_runner.cpp:141] Input prepared.
+I executorch:arm_executor_runner.cpp:143] Starting the model execution...
+I executorch:ArmBackendEthosU.cpp:87] ArmBackend::execute 0x70000060
+I executorch:ArmBackendEthosU.cpp:234] Tensor input 0 will be permuted
+I executorch:arm_executor_runner.cpp:152] Model executed successfully.
+I executorch:arm_executor_runner.cpp:156] 1 outputs:
+Output[0][0]: -0.639322
+Output[0][1]: 0.169232
+Output[0][2]: -0.451286
+...(Skipped)
+Output[0][996]: 0.150429
+Output[0][997]: -0.488894
+Output[0][998]: 0.037607
+Output[0][999]: 1.203430
+I executorch:arm_executor_runner.cpp:177] Program complete, exiting.
+I executorch:arm_executor_runner.cpp:179]
+```
+
 ## Takeaways
 Through this tutorial we've learnt how to use the ExecuTorch software to both export a standard model from PyTorch and to run it on the compact and fully functioned ExecuTorch runtime, enabling a smooth path for offloading models from PyTorch to Arm based platforms.
 
 To recap, there are two major flows:
- * A direct flow which offloads work onto the Cortex-M using libraries built into ExecuTorch
- * A delegated flow which partitions the graph into sections for Cortex-M and sections which can be offloaded and accelerated on the Ethos-U hardware
+ * A direct flow which offloads work onto the Cortex-M using libraries built into ExecuTorch.
+ * A delegated flow which partitions the graph into sections for Cortex-M and sections which can be offloaded and accelerated on the Ethos-U hardware.
 
 Both of these flows continue to evolve, enabling more use-cases and better performance.
 

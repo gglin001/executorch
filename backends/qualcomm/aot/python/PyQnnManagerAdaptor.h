@@ -7,6 +7,7 @@
  */
 #pragma once
 #include <executorch/backends/qualcomm/aot/ir/qcir_utils.h>
+#include <executorch/backends/qualcomm/aot/python/PyQnnWrapperAdaptor.h>
 #include <executorch/backends/qualcomm/runtime/Logging.h>
 #include <executorch/backends/qualcomm/runtime/QnnExecuTorch.h>
 #include <executorch/backends/qualcomm/runtime/QnnManager.h>
@@ -18,11 +19,12 @@
 #include <string_view>
 
 namespace py = pybind11;
-namespace torch {
-namespace executor {
+namespace executorch {
+namespace backends {
 namespace qnn {
 class PyQnnManager {
  public:
+  // used for AoT compilation
   explicit PyQnnManager(const py::bytes& buffer)
       : qnn_executorch_option_ptr_(buffer),
         qnn_executorch_context_binary_(QNN_EXECUTORCH_CONTEXT_BINARY) {
@@ -33,8 +35,20 @@ class PyQnnManager {
     qnn_manager_ = std::make_shared<QnnManager>(
         qnn_executorch_options, qnn_executorch_context_binary_);
   }
+  // used for loading context binary directly
+  explicit PyQnnManager(const py::bytes& buffer, const py::bytes& ctx_bin)
+      : qnn_executorch_option_ptr_(buffer) {
+    auto qnn_executorch_options = GetQnnExecuTorchOptions(
+        qnn_executorch_option_ptr_.cast<std::string_view>().data());
 
-  Error Init() {
+    py::buffer_info info(py::buffer(ctx_bin).request());
+    qnn_executorch_context_binary_.buffer = static_cast<void*>(info.ptr);
+    qnn_executorch_context_binary_.nbytes = info.size * info.itemsize;
+    qnn_manager_ = std::make_shared<QnnManager>(
+        qnn_executorch_options, qnn_executorch_context_binary_);
+  }
+
+  executorch::runtime::Error Init() {
     return qnn_manager_->Init();
   }
   bool IsNodeSupportedByBackend(
@@ -83,8 +97,8 @@ class PyQnnManager {
             wrapper->SetName(param->GetName());
             set_tensor(wrapper, params);
           } else {
-            Error err = param->PopulateQnnParam();
-            if (err != Error::Ok) {
+            executorch::runtime::Error err = param->PopulateQnnParam();
+            if (err != executorch::runtime::Error::Ok) {
               QNN_EXECUTORCH_LOG_ERROR(
                   "Fail to get scalar parameter in online prepare stage");
               return py::array_t<char>(0);
@@ -117,7 +131,8 @@ class PyQnnManager {
       context_binary.buffer = builder.GetBufferPointer();
       context_binary.nbytes = builder.GetSize();
     } else if (
-        qnn_manager_->Compile(op_wrappers, context_binary) != Error::Ok) {
+        qnn_manager_->Compile(op_wrappers, context_binary) !=
+        executorch::runtime::Error::Ok) {
       return py::array_t<char>(0);
     }
 
@@ -141,6 +156,32 @@ class PyQnnManager {
     return qnn_manager_->IsTensorDump();
   }
 
+  executorch::runtime::Error AllocateTensor() {
+    return qnn_manager_->AllocateTensor();
+  }
+
+  py::list GetGraphInputs() {
+    py::list ret;
+    for (const std::shared_ptr<TensorWrapper>& input :
+         qnn_manager_->GetGraphInputs()) {
+      ret.append(PyQnnTensorWrapper(input));
+    }
+    return ret;
+  }
+
+  py::list GetGraphOutputs() {
+    py::list ret;
+    for (const std::shared_ptr<TensorWrapper>& output :
+         qnn_manager_->GetGraphOutputs()) {
+      ret.append(PyQnnTensorWrapper(output));
+    }
+    return ret;
+  }
+
+  uint64_t GetSpillFillBufferSize() {
+    return qnn_manager_->GetSpillFillBufferSize();
+  }
+
  private:
   // Store the bytes object instead of a raw pointer so that this module will
   // keep the bytes alive.
@@ -149,5 +190,5 @@ class PyQnnManager {
   std::shared_ptr<QnnManager> qnn_manager_;
 };
 } // namespace qnn
-} // namespace executor
-} // namespace torch
+} // namespace backends
+} // namespace executorch

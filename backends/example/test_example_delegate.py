@@ -42,10 +42,11 @@ class TestExampleDelegate(unittest.TestCase):
         example_inputs = Conv2dModule.get_example_inputs()
         EDGE_COMPILE_CONFIG = exir.EdgeCompileConfig(
             _check_ir_validity=False,
+            _skip_dim_order=True,  # TODO(T182928844): Delegate dim order op to backend.
         )
 
         m = model.eval()
-        m = torch._export.capture_pre_autograd_graph(m, copy.deepcopy(example_inputs))
+        m = torch.export.export_for_training(m, copy.deepcopy(example_inputs)).module()
         # print("original model:", m)
         quantizer = ExampleQuantizer()
         # quantizer = XNNPACKQuantizer()
@@ -77,10 +78,11 @@ class TestExampleDelegate(unittest.TestCase):
 
         EDGE_COMPILE_CONFIG = exir.EdgeCompileConfig(
             _check_ir_validity=False,
+            _skip_dim_order=True,  # TODO(T182928844): Delegate dim order op to backend.
         )
 
         m = model.eval()
-        m = torch._export.capture_pre_autograd_graph(m, copy.deepcopy(example_inputs))
+        m = torch.export.export_for_training(m, copy.deepcopy(example_inputs)).module()
         quantizer = ExampleQuantizer()
 
         m = prepare_pt2e(m, quantizer)

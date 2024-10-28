@@ -163,7 +163,7 @@ void embedding_byte_per_channel(
     }
 
     const CTYPE_WEIGHT* w_data =
-        weight.data_ptr<CTYPE_WEIGHT>() + embedding_dim * index;
+        weight.const_data_ptr<CTYPE_WEIGHT>() + embedding_dim * index;
 
     for (int j = 0; j < embedding_dim; ++j) {
       int32_t group_id = j / group_size;
@@ -250,7 +250,7 @@ Tensor& quantized_embedding_byte_out(
 }
 
 Tensor& quantized_embedding_byte_out(
-    RuntimeContext& context,
+    KernelRuntimeContext& context,
     const Tensor& weight,
     const Tensor& weight_scales,
     const optional<Tensor>& opt_weight_zero_points,
@@ -313,7 +313,7 @@ Tensor& quantized_embedding_byte_dtype_out(
 }
 
 Tensor& quantized_embedding_byte_dtype_out(
-    RuntimeContext& context,
+    KernelRuntimeContext& context,
     const Tensor& weight,
     const Tensor& weight_scales,
     const optional<Tensor>& opt_weight_zero_points,

@@ -16,9 +16,10 @@
 #include <executorch/runtime/core/error.h>
 
 #include <memory>
+#include <unordered_map>
 
-namespace torch {
-namespace executor {
+namespace executorch {
+namespace backends {
 namespace qnn {
 class QnnManager {
  public:
@@ -28,17 +29,19 @@ class QnnManager {
       const QnnExecuTorchContextBinary& qnn_executorch_context_binary);
 
   ~QnnManager();
-  Error Init();
-  Error AllocateTensor();
-  Error AllocateTensor(
+  executorch::runtime::Error Init();
+  executorch::runtime::Error AllocateTensor();
+  executorch::runtime::Error AllocateTensor(
       std::vector<std::shared_ptr<TensorWrapper>>& inputs,
       std::vector<std::shared_ptr<TensorWrapper>>& outputs);
 
-  Error Execute(
+  executorch::runtime::Error Execute(
       const std::vector<Qnn_Tensor_t>& input_tensor_structs,
-      std::vector<Qnn_Tensor_t>& output_tensor_structs);
+      std::vector<Qnn_Tensor_t>& output_tensor_structs,
+      executorch::runtime::EventTracer* event_tracer);
 
-  Error ProfileExecuteData(EventTracer* event_tracer);
+  executorch::runtime::Error ProfileExecuteData(
+      executorch::runtime::EventTracer* event_tracer);
 
   void Destroy();
 
@@ -51,19 +54,28 @@ class QnnManager {
   }
 
   bool IsTensorDump() {
-    return options_->tensor_dump_output_path()->size() > 0;
+    return options_->dump_intermediate_outputs();
   }
 
   bool IsNodeSupportedByBackend(
       std::vector<std::shared_ptr<OpWrapper>>& op_wrappers);
 
-  Error Compile(
+  executorch::runtime::Error Compile(
       std::vector<std::shared_ptr<OpWrapper>>& op_wrappers,
       QnnExecuTorchContextBinary& qnn_executorch_context_binary);
 
-  Error RegisterMem(
+  executorch::runtime::Error RegisterMem(
       void* data_ptr,
       const std::shared_ptr<TensorWrapper>& tensor_wrapper);
+
+  // Pre-register custom memory handle from the SharedBuffer before execution
+  executorch::runtime::Error PreRegisterMem();
+
+  uint64_t GetSpillFillBufferSize() {
+    auto* htp_backend_cache_ptr = static_cast<HtpBackendCache*>(
+        backend_params_ptr_->qnn_backend_cache_ptr_.get());
+    return htp_backend_cache_ptr->GetSpillFillBufferSize();
+  }
 
   std::vector<std::shared_ptr<TensorWrapper>> GetGraphInputs() {
     return input_tensors_;
@@ -73,7 +85,7 @@ class QnnManager {
   }
 
  private:
-  Error LoadQnnLibrary();
+  executorch::runtime::Error LoadQnnLibrary();
 
   static constexpr const char* htp_library_name_ = "libQnnHtp.so";
   static constexpr const char* gpu_library_name_ = "libQnnGpu.so";
@@ -86,7 +98,29 @@ class QnnManager {
   const QnnExecuTorchOptions* options_;
   std::vector<std::shared_ptr<TensorWrapper>> input_tensors_;
   std::vector<std::shared_ptr<TensorWrapper>> output_tensors_;
+  executorch::runtime::Error RegisterIonMem(
+      void* data_ptr,
+      const std::shared_ptr<TensorWrapper>& tensor_wrapper);
+  executorch::runtime::Error RegisterCustomMem(
+      void* data_ptr,
+      void* custom_mem_base,
+      const std::shared_ptr<TensorWrapper>& tensor_wrapper);
+  std::unordered_map<Qnn_DataType_t, executorch::aten::ScalarType>
+      qnn_dtype_to_scalar_type_ = {
+          {Qnn_DataType_t::QNN_DATATYPE_INT_32,
+           executorch::aten::ScalarType::Int},
+          {Qnn_DataType_t::QNN_DATATYPE_FLOAT_32,
+           executorch::aten::ScalarType::Float},
+          {Qnn_DataType_t::QNN_DATATYPE_SFIXED_POINT_8,
+           executorch::aten::ScalarType::Char},
+          {Qnn_DataType_t::QNN_DATATYPE_SFIXED_POINT_16,
+           executorch::aten::ScalarType::Short},
+          {Qnn_DataType_t::QNN_DATATYPE_UFIXED_POINT_8,
+           executorch::aten::ScalarType::Byte},
+          {Qnn_DataType_t::QNN_DATATYPE_UFIXED_POINT_16,
+           executorch::aten::ScalarType::Bits16},
+  };
 };
 } // namespace qnn
-} // namespace executor
-} // namespace torch
+} // namespace backends
+} // namespace executorch

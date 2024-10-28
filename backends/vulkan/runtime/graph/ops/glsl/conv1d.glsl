@@ -12,87 +12,110 @@
 
 #define VEC4_T ${texel_type(DTYPE)}
 
+#define op(X, A, B) ${OPERATOR}
+
 #include "indexing_utils.h"
 
 layout(std430) buffer;
 
-layout(set = 0, binding = 0, ${IMAGE_FORMAT[DTYPE]}) uniform PRECISION restrict writeonly ${IMAGE_T[NDIM][DTYPE]} image_out;
-layout(set = 0, binding = 1) uniform PRECISION sampler3D image_in;
-layout(set = 0, binding = 2) uniform PRECISION sampler3D kernel_in;
-layout(set = 0, binding = 3) uniform PRECISION sampler3D bias_in;
+${layout_declare_tensor(B, "w", "t_out", DTYPE, STORAGE)}
+${layout_declare_tensor(B, "r", "t_in", DTYPE, STORAGE)}
+${layout_declare_tensor(B, "r", "kernel_in", DTYPE, STORAGE)}
+${layout_declare_tensor(B, "r", "bias_in", DTYPE, STORAGE)}
 
-layout(set = 0, binding = 4) uniform PRECISION restrict Out_channels {
-  int data;
-}
-out_channels;
+${layout_declare_ubo(B, "ivec3", "out_limits")}
+${layout_declare_ubo(B, "ivec4", "in_sizes")}
 
-layout(set = 0, binding = 5) uniform PRECISION restrict In_length {
-  int data;
-}
-in_length;
+${layout_declare_ubo(B, "ivec4", "out_axis_map")}
+${layout_declare_ubo(B, "ivec4", "in_axis_map")}
+${layout_declare_ubo(B, "ivec4", "kernel_axis_map")}
+${layout_declare_ubo(B, "ivec4", "bias_axis_map")}
 
-layout(set = 0, binding = 6) uniform PRECISION restrict Kernel_size {
-  int data;
-}
-kernel_size;
+${layout_declare_ubo(B,"int", "kernel_size", "int", "stride", "int", "padding", "int", "dilation", "int", "in_group_size", "int", "out_group_size")}
+
+${layout_declare_ubo(B, "float", "out_min", "float", "out_max")}
 
 layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z_id = 2) in;
 
-/*
- * This implementation optimize for simplicity (and partially performance) for a
- * (1, C, L) where C == groups. Hence we only focus on calculating the rolling
- * kernel of the L dimension.
- */
+// Let us define
+//
+// input = (N, in_C, in_L),
+// output = (N, out_C, out_L),
+// groups = G,
+// kernel = K,
+//
+// which results in shapes
+//
+// weight = (out_C, in_C / G, K),
+// bias = (out_C,).
+//
+// This implementation performs out_C shader invocations, where each invocation
+// calculates the rolling kernel of the length dimension for each batch, i.e.,
+// computes out_L * N results.
+//
+// Note that we can rewrite this implementation as out_L * out_C * ceil(N / 4)
+// shader invocations, where each invocation computes 1 result. But that
+// performs worse.
 void main() {
-  const ivec3 pos = ivec3(gl_GlobalInvocationID);
+  const ivec3 lpos = ivec3(gl_GlobalInvocationID);
 
-  // The global workgroup should have taken care of it. We only perform one
-  // work item for each 1d tensor on lengths
-  if (pos.x >= 1) {
+  if (any(greaterThanEqual(lpos, out_limits))) {
     return;
   }
 
-  int c = pos.y;
-  if (c >= out_channels.data) {
-    return;
-  }
+  int in_length = in_sizes.x;
+  int batch_size = in_sizes.z;
 
-  // Assume n = 1, do not handle n > 1 case for now.
-  int n = pos.z;
-  if (n >= 1) {
-    return;
-  }
+  // "out_c" is the output's channel index where we write our result.
+  // Across shader invocations, this is the only value that varies.
+  int out_c = lpos.y;
+  VEC4_T bias = load_texel_lpos(bias_in, ivec3(out_c, 0, 0), bias_axis_map);
 
-  vec4 bias = texelFetch(bias_in, ivec3(c, 0, 0), 0);
+  // "in_c" tracks the input's channel start index.
+  // We iterate over the input group that corresponds to the output group.
+  int c_start = (out_c / out_group_size) * in_group_size;
+  int c_end = c_start + in_group_size;
 
-  for (int i = 0; i < in_length.data - kernel_size.data + 1; ++i) {
-    vec4 v = vec4(0);
-    for (int k = 0; k < kernel_size.data; ++k) {
-      const ivec3 in_pos = ivec3(i+k, c, 0);
-      const vec4 input_value = texelFetch(image_in, in_pos, 0);
+  // "in_l" tracks the input's length start index for our input-kernel overlay
+  // region.
+  int l_start = -padding;
+  int l_end = in_length + padding - dilation * (kernel_size - 1);
 
-      // Note that we are reading weight in the inner loop, this could be
-      // improved by moving it before the outer loop. Since the weight vector is
-      // contant for the entire call.
+  // Since the input/output tensors are channel-packed, which is along the
+  // batch dimension, we can batch-read/write four elements at a time.
+  for (int n = 0; n < batch_size; n += 4) {
+    // "out_l" tracks the output's length index where we write our result.
+    int out_l = 0;
 
-      // weight in input-space: (c, 0, k);
-      // notice that c is 4-packed. We need to mod 4 to get the actual weight.
-      const ivec3 w_pos = ivec3(k, 0, c / 4);
-      const vec4 weight = texelFetch(kernel_in, w_pos, 0);
+    for (int in_l = l_start; in_l < l_end; in_l += stride, ++out_l) {
+      VEC4_T sum = VEC4_T(0);
 
-      float w = weight.x;
-      if (c % 4 == 1) {
-        w = weight.y;
-      } else if (c % 4 == 2) {
-        w = weight.z;
-      } else if (c % 4 == 3) {
-        w = weight.w;
+      for (int in_c = c_start; in_c < c_end; ++in_c) {
+        // "k" tracks the kernel's index for our input-kernel computation.
+        // It reads out-of-bound zeros, but trying to avoid them complicates
+        // for-loop conditions, which results in worse performance.
+        for (int k = 0; k < kernel_size; k += 4) {
+          // Since the weight tensor is width-packed, which is along the length
+          // dimension, we can batch-read four elements at a time.
+          const ivec3 w_lpos = ivec3(k / 4, in_c % in_group_size, out_c);
+          const VEC4_T weight = load_texel_lpos(kernel_in, w_lpos, kernel_axis_map);
+
+          ivec3 in_pos = lpos_to_pos(ivec3(in_l + k * dilation, in_c, n / 4), in_axis_map);
+          sum = fma(weight.xxxx, load_texel(t_in, in_pos), sum);
+
+          in_pos[in_axis_map.x] += dilation;
+          sum = fma(weight.yyyy, load_texel(t_in, in_pos), sum);
+
+          in_pos[in_axis_map.x] += dilation;
+          sum = fma(weight.zzzz, load_texel(t_in, in_pos), sum);
+
+          in_pos[in_axis_map.x] += dilation;
+          sum = fma(weight.wwww, load_texel(t_in, in_pos), sum);
+        }
       }
 
-      v += w * input_value.x;
+      const ivec3 out_lpos = ivec3(out_l, out_c, n / 4);
+      write_texel_lpos(t_out, out_lpos, op(sum + bias.x, out_min, out_max), out_axis_map);
     }
-
-    ivec3 out_pos = ivec3(i, c, 0);
-    imageStore(image_out, out_pos, vec4(v.x + bias.x, 0, 0, 0));
   }
 }

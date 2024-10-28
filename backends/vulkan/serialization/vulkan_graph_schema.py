@@ -17,6 +17,7 @@ from typing import List, Union
 
 @dataclass
 class OperatorCall:
+    node_id: int
     name: str
     args: List[int]
 
@@ -99,6 +100,11 @@ class String:
     string_val: str
 
 
+@dataclass
+class SymInt:
+    value: int
+
+
 GraphTypes = Union[
     Null,
     Int,
@@ -110,6 +116,7 @@ GraphTypes = Union[
     DoubleList,
     ValueList,
     String,
+    SymInt,
 ]
 
 

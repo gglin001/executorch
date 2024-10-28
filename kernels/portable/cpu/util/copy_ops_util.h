@@ -113,6 +113,17 @@ void get_pixel_shuffle_out_target_size(
     exec_aten::SizesType* out_sizes,
     size_t* out_ndim);
 
+bool check_pixel_unshuffle_args(
+    const Tensor& in,
+    int64_t upscale_factor,
+    Tensor& out);
+
+void get_pixel_unshuffle_out_target_size(
+    const Tensor& in,
+    int64_t upscale_factor,
+    exec_aten::SizesType* out_sizes,
+    size_t* out_ndim);
+
 bool check_select_copy_out_args(
     const Tensor& in,
     int64_t dim,
@@ -122,19 +133,6 @@ bool check_select_copy_out_args(
 void get_select_copy_out_target_size(
     const Tensor& in,
     int64_t dim,
-    exec_aten::SizesType* out_sizes,
-    size_t* out_ndim);
-
-bool check_slice_copy_args(
-    const Tensor& in,
-    int64_t dim,
-    int64_t step,
-    Tensor& out);
-
-void get_slice_copy_out_target_size(
-    const Tensor& in,
-    int64_t dim,
-    int64_t num_values,
     exec_aten::SizesType* out_sizes,
     size_t* out_ndim);
 
@@ -196,6 +194,12 @@ bool check_to_copy_args(
     const Tensor& input,
     bool non_blocking,
     exec_aten::optional<exec_aten::MemoryFormat> memory_format,
+    Tensor& out);
+
+bool check__to_dim_order_copy_args(
+    const Tensor& input,
+    bool non_blocking,
+    exec_aten::OptionalArrayRef<int64_t> dim_order,
     Tensor& out);
 
 bool check_unsqueeze_copy_args(

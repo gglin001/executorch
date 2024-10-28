@@ -1,9 +1,15 @@
+load("@fbcode_macros//build_defs:native_rules.bzl", "buck_genrule")
 load("@fbsource//xplat/executorch/build:runtime_wrapper.bzl", "runtime")
 
+def get_vulkan_compiler_flags():
+    return ["-Wno-missing-prototypes", "-Wno-global-constructors"]
+
 def vulkan_spv_shader_lib(name, spv_filegroups, is_fbcode = False):
-    gen_vulkan_spv_target = "//executorch/backends/vulkan:gen_vulkan_spv_bin"
-    glslc_path = "//caffe2/fb/vulkan/dotslash:glslc"
+    gen_vulkan_spv_target = "//xplat/executorch/backends/vulkan:gen_vulkan_spv_bin"
+    glslc_path = "//xplat/caffe2/fb/vulkan/dotslash:glslc"
+
     if is_fbcode:
+        gen_vulkan_spv_target = "//executorch/backends/vulkan:gen_vulkan_spv_bin"
         glslc_path = "//caffe2/fb/vulkan/tools:glslc"
 
     glsl_paths = []
@@ -12,21 +18,25 @@ def vulkan_spv_shader_lib(name, spv_filegroups, is_fbcode = False):
     for target, subpath in spv_filegroups.items():
         glsl_paths.append("$(location {})/{}".format(target, subpath))
 
-    genrule_cmd = [
-        "$(exe {})".format(gen_vulkan_spv_target),
-        "--glsl-paths {}".format(" ".join(glsl_paths)),
-        "--output-path $OUT",
-        "--glslc-path=$(exe {})".format(glslc_path),
-        "--tmp-dir-path=$OUT",
-    ]
+    genrule_cmd = (
+        "$(exe {}) ".format(gen_vulkan_spv_target) +
+        "--glsl-paths {} ".format(" ".join(glsl_paths)) +
+        "--output-path $OUT " +
+        "--glslc-path=$(exe {}) ".format(glslc_path) +
+        "--tmp-dir-path=$OUT " +
+        select({
+            "DEFAULT": "",
+            "ovr_config//os:android": "--optimize",
+        })
+    )
 
     genrule_name = "gen_{}_cpp".format(name)
-    runtime.genrule(
+    buck_genrule(
         name = genrule_name,
         outs = {
             "{}.cpp".format(name): ["spv.cpp"],
         },
-        cmd = " ".join(genrule_cmd),
+        cmd = genrule_cmd,
         default_outs = ["."],
         labels = ["uses_dotslash"],
     )
@@ -36,6 +46,7 @@ def vulkan_spv_shader_lib(name, spv_filegroups, is_fbcode = False):
         srcs = [
             ":{}[{}.cpp]".format(genrule_name, name),
         ],
+        compiler_flags = get_vulkan_compiler_flags(),
         define_static_target = False,
         # Static initialization is used to register shaders to the global shader registry,
         # therefore link_whole must be True to make sure unused symbols are not discarded.
@@ -52,17 +63,15 @@ def define_common_targets(is_fbcode = False):
     runtime.python_library(
         name = "gen_vulkan_spv_lib",
         srcs = [
-            "runtime/api/gen_vulkan_spv.py",
+            "runtime/gen_vulkan_spv.py",
         ],
         base_module = "",
-        deps = [
-            "//caffe2/torchgen:torchgen",
-        ],
+        external_deps = ["torchgen"],
     )
 
     runtime.python_binary(
         name = "gen_vulkan_spv_bin",
-        main_module = "runtime.api.gen_vulkan_spv",
+        main_module = "runtime.gen_vulkan_spv",
         visibility = [
             "//executorch/backends/vulkan/...",
             "@EXECUTORCH_CLIENTS",
@@ -133,10 +142,18 @@ def define_common_targets(is_fbcode = False):
         VK_API_DEPS += [
             "fbsource//third-party/volk:volk",
         ]
+        VK_API_DEPS += select({
+            "DEFAULT": [],
+            "ovr_config//os:android": ["fbsource//third-party/toolchains:android"],
+        })
         VK_API_PREPROCESSOR_FLAGS += [
             "-DUSE_VULKAN_WRAPPER",
             "-DUSE_VULKAN_VOLK",
         ]
+        VK_API_PREPROCESSOR_FLAGS += select({
+            "DEFAULT": [],
+            "ovr_config//os:android": ["-DVK_ANDROID_external_memory_android_hardware_buffer"],
+        })
     else:
         VK_API_DEPS += [
             "fbsource//third-party/swiftshader:swiftshader_vk_headers",
@@ -146,11 +163,16 @@ def define_common_targets(is_fbcode = False):
 
     runtime.cxx_library(
         name = "vulkan_compute_api",
+        compiler_flags = get_vulkan_compiler_flags(),
         srcs = native.glob([
-            "runtime/api/*.cpp",
+            "runtime/api/**/*.cpp",
+            "runtime/utils/**/*.cpp",
+            "runtime/vk_api/**/*.cpp",
         ]),
         exported_headers = native.glob([
-            "runtime/api/*.h",
+            "runtime/api/**/*.h",
+            "runtime/utils/**/*.h",
+            "runtime/vk_api/**/*.h",
         ]),
         visibility = [
             "//executorch/backends/vulkan/...",
@@ -165,6 +187,7 @@ def define_common_targets(is_fbcode = False):
         srcs = native.glob([
             "runtime/graph/**/*.cpp",
         ]),
+        compiler_flags = get_vulkan_compiler_flags(),
         exported_headers = native.glob([
             "runtime/graph/**/*.h",
         ]),
@@ -191,6 +214,7 @@ def define_common_targets(is_fbcode = False):
         srcs = native.glob([
             "runtime/*.cpp",
         ]),
+        compiler_flags = get_vulkan_compiler_flags(),
         headers = native.glob([
             "runtime/*.h",
         ]),
@@ -203,6 +227,7 @@ def define_common_targets(is_fbcode = False):
         deps = [
             ":vk_delegate_schema",
             ":vulkan_graph_runtime",
+            "//executorch/runtime/core:event_tracer",
             "//executorch/runtime/backend:interface",
             "//executorch/runtime/core/exec_aten/util:tensor_util",
         ],

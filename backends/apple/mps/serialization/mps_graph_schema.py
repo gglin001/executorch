@@ -16,15 +16,32 @@ class MPSDataType(IntEnum):
     mps_data_type_invalid = 0
     mps_data_type_float16 = 1
     mps_data_type_float32 = 2
-    mps_data_type_bfloat16 = 3
-    mps_data_type_int8 = 4
-    mps_data_type_int16 = 5
-    mps_data_type_int32 = 6
-    mps_data_type_int64 = 7
-    mps_data_type_uint8 = 8
-    mps_data_type_bool = 9
-    mps_data_type_complex_float16 = 10
-    mps_data_type_complex_float32 = 11
+    mps_data_type_float64 = 3
+    mps_data_type_bfloat16 = 4
+
+    # Signed integers.
+    mps_data_type_int4 = 5
+    mps_data_type_int8 = 6
+    mps_data_type_int16 = 7
+    mps_data_type_int32 = 8
+    mps_data_type_int64 = 9
+
+    # Unsigned integers. range: [0, UTYPE_MAX]
+    mps_data_type_uint4 = 10
+    mps_data_type_uint8 = 11
+    mps_data_type_uint16 = 12
+    mps_data_type_uint32 = 13
+    mps_data_type_uint64 = 14
+
+    mps_data_type_bool = 15
+
+    mps_data_type_complex_float16 = 16
+    mps_data_type_complex_float32 = 17
+
+
+class OpType(IntEnum):
+    mps_graph = 0
+    metal_kernel = 1
 
 
 @dataclass
@@ -51,6 +68,12 @@ class MPSNode3x1:
     input2_id: int
     input3_id: int
     output_id: int
+
+
+@dataclass
+class MPSDequantizeNode(MPSNode1x1):
+    scales_id: int
+    zero_points_id: int
 
 
 @dataclass
@@ -360,6 +383,11 @@ class MPSRound(MPSNode1x1):
 
 
 @dataclass
+class MPSLogicalNot(MPSNode1x1):
+    pass
+
+
+@dataclass
 class MPSBitwise(MPSNode1x1):
     pass
 
@@ -432,6 +460,25 @@ class MPSEmbedding(MPSNode2x1):
     padding_idx: int = -1
     scale_grad_by_freq: bool = False
     sparse: bool = False
+
+
+@dataclass
+class MPSIndexTensor(MPSNode1x1):
+    indices_id: List[int] = field(default_factory=list)
+
+
+@dataclass
+class MPSIndexPut(MPSNode1x1):
+    indices_id: List[int] = field(default_factory=list)
+    values_shape: List[int] = field(default_factory=list)
+    values_id: int = -1
+
+
+@dataclass
+class MPSScatter(MPSNode1x1):
+    dim: int = 0
+    idx_id: int = -1
+    src_id: int = -1
 
 
 ##
@@ -611,6 +658,18 @@ class MPSArange:
     dtype: MPSDataType
 
 
+##
+## Quant - Dequant ops
+##
+@dataclass
+class MPSDequantizePerChannelGroup(MPSDequantizeNode):
+    quant_min: int
+    quant_max: int
+    dtype: MPSDataType
+    group_size: int
+    output_dtype: MPSDataType
+
+
 MPSNodeUnion = Union[
     # Activation ops
     MPSHardTanh,
@@ -664,6 +723,7 @@ MPSNodeUnion = Union[
     MPSIsnan,
     MPSIsinf,
     MPSRound,
+    MPSLogicalNot,
     # Linear algebra ops
     MPSMatMul,
     MPSAddmm,
@@ -678,6 +738,9 @@ MPSNodeUnion = Union[
     # Indexing ops
     MPSIndexSelect,
     MPSEmbedding,
+    MPSIndexTensor,
+    MPSIndexPut,
+    MPSScatter,
     # Shape ops
     MPSPermute,
     MPSView,
@@ -710,6 +773,8 @@ MPSNodeUnion = Union[
     MPSConstantPadND,
     # Range ops
     MPSArange,
+    # Quant-Dequant ops
+    MPSDequantizePerChannelGroup,
 ]
 
 
@@ -730,7 +795,14 @@ class MPSTensor:
     num_dims: int
     dims: List[int]
     constant_buffer_size: int
-    constant_buffer: Buffer
+    constant_buffer: Buffer  # deprecated
+    segment_offset: int = 0
+
+
+@dataclass
+class DataSegment:
+    offset: int
+    size: int
 
 
 @dataclass
@@ -741,3 +813,5 @@ class MPSGraph:
     input_ids: List[int]
     output_ids: List[int]
     constant_ids: List[int]
+    graph_type: OpType
+    constant_segment: DataSegment

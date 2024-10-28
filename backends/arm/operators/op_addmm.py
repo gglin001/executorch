@@ -3,6 +3,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 from typing import List
 
 import serializer.tosa_serializer as ts
@@ -12,10 +14,7 @@ from executorch.backends.arm.operators.node_visitor import (
     register_node_visitor,
 )
 from executorch.backends.arm.tosa_mapping import TosaArg
-from executorch.backends.arm.tosa_quant_utils import (
-    compute_multiplier_and_shift,
-    get_quant_node_args,
-)
+from executorch.backends.arm.tosa_quant_utils import build_rescale, get_quant_node_args
 
 from executorch.backends.arm.tosa_utils import build_reshape
 from executorch.exir.dialects._ops import ops as exir_ops
@@ -73,7 +72,7 @@ class AddmmVisitor(NodeVisitor):
                 quant_node = input_node.all_input_nodes[0]
             else:
                 quant_node = input_node
-            input_zp = get_quant_node_args(quant_node)[1]
+            input_zp = get_quant_node_args(quant_node).zp
         attr.ConvAttribute(
             pad=pad_attr,
             stride=stride_attr,
@@ -111,52 +110,37 @@ class AddmmVisitor(NodeVisitor):
             # rank > 2 linear layer
             if input_node.target == exir_ops.edge.aten.view_copy.default:
                 quant_node = input_node.all_input_nodes[0]
-                input_scale, _ = get_quant_node_args(quant_node)
+                input_scale = get_quant_node_args(quant_node).scale
                 consumer_node = list(node.users)[0]
                 consumer_consumer_node = list(consumer_node.users)[0]
-                (
-                    consumer_node_scale,
-                    consumer_node_node_zp,
-                ) = get_quant_node_args(consumer_consumer_node)
-
+                quant_args = get_quant_node_args(consumer_consumer_node)
+                consumer_node_scale = quant_args.scale
+                consumer_node_node_zp = quant_args.zp
             else:
-                input_scale, _ = get_quant_node_args(input_node)
+                input_scale = get_quant_node_args(input_node).scale
                 consumer_node = list(node.users)[0]
-                (
-                    consumer_node_scale,
-                    consumer_node_node_zp,
-                ) = get_quant_node_args(consumer_node)
+                quant_args = get_quant_node_args(consumer_node)
+                consumer_node_scale = quant_args.scale
+                consumer_node_node_zp = quant_args.zp
 
             weight_node_q_node = weight_node.all_input_nodes[0]
-            weight_scale, _ = get_quant_node_args(weight_node_q_node)
+            weight_scale = get_quant_node_args(weight_node_q_node).scale
 
             output_rescale_scale = (input_scale * weight_scale) / consumer_node_scale
-            (
-                multiplier_output,
-                shift_output,
-            ) = compute_multiplier_and_shift(output_rescale_scale)
-
-            attr_rescale_output = ts.TosaSerializerAttribute()
-            attr_rescale_output.RescaleAttribute(
-                input_zp=0,
-                output_zp=consumer_node_node_zp,
-                multiplier=[multiplier_output],
-                shift=[shift_output],
-                scale32=True,
-                double_round=True,
-                per_channel=False,
-                input_unsigned=False,
-                output_unsigned=False,
-            )
 
             reshaped_res = tosa_graph.addIntermediate(result_shape, ts.DType.INT32)
             build_reshape(tosa_graph, conv2d_res.name, result_shape, reshaped_res.name)
 
-            tosa_graph.addOperator(
-                TosaOp.Op().RESCALE,
-                [reshaped_res.name],
-                [output.name],
-                attr_rescale_output,
+            build_rescale(
+                tosa_fb=tosa_graph,
+                scale=output_rescale_scale,
+                input_node=reshaped_res,
+                output_name=output.name,
+                output_type=ts.DType.INT8,
+                output_shape=reshaped_res.shape,
+                input_zp=0,
+                output_zp=consumer_node_node_zp,
+                is_double_round=False,
             )
 
         else:

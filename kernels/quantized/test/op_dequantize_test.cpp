@@ -11,6 +11,7 @@
 #include <executorch/runtime/core/exec_aten/testing_util/tensor_factory.h>
 #include <executorch/runtime/core/exec_aten/testing_util/tensor_util.h>
 #include <executorch/runtime/core/exec_aten/util/scalar_type_util.h>
+#include <executorch/runtime/platform/runtime.h>
 #include <executorch/test/utils/DeathTest.h>
 
 #include <gtest/gtest.h>
@@ -57,10 +58,16 @@ void test_dtype() {
 }
 
 TEST(OpDequantizeOutTest, AllDtypesSupported) {
+  et_pal_init();
   test_dtype<ScalarType::Byte>();
+  test_dtype<ScalarType::Char>();
+  test_dtype<ScalarType::Short>();
+  test_dtype<ScalarType::Bits16>();
+  test_dtype<ScalarType::Int>();
 }
 
 TEST(OpDequantizeOutTest, NonWholeNumbers) {
+  et_pal_init();
   TensorFactory<ScalarType::Byte> tf;
 
   Tensor input = tf.full({3, 5}, 100);
@@ -87,6 +94,7 @@ TEST(OpDequantizeOutTest, NonWholeNumbers) {
 }
 
 TEST(OpDequantizeOutTest, TensorArgOverload) {
+  et_pal_init();
   TensorFactory<ScalarType::Byte> tf_byte;
   TensorFactory<ScalarType::Double> tf_double;
   TensorFactory<ScalarType::Long> tf_long;
@@ -115,6 +123,7 @@ TEST(OpDequantizeOutTest, TensorArgOverload) {
 }
 
 TEST(OpDequantizeOutTest, DequantizePerChannel) {
+  et_pal_init();
   TensorFactory<ScalarType::Byte> tf_byte;
   TensorFactory<ScalarType::Double> tf_double;
   TensorFactory<ScalarType::Long> tf_long;
@@ -162,5 +171,26 @@ TEST(OpDequantizeOutTest, DequantizePerChannel) {
       optional<ScalarType>(),
       out);
 
+  EXPECT_TENSOR_EQ(out, expected);
+
+  // Test with a different axis
+  out = tfo.zeros({3});
+  input = tf_byte.make({3}, {100, 100, 100});
+  scale = tf_double.make({3}, {0.5, 0.75, 1});
+  zero_point = tf_long.make({3}, {30, 50, 60});
+  // (100 - 30) * 0.5
+  // (100 - 50) * 0.75
+  // (100 - 60) * 1
+  expected = tfo.make({3}, {35, 37.5, 40});
+  dequantize_per_channel_out(
+      input,
+      scale,
+      zero_point,
+      /*axis=*/0,
+      quant_min,
+      quant_max,
+      ScalarType::Byte,
+      optional<ScalarType>(),
+      out);
   EXPECT_TENSOR_EQ(out, expected);
 }

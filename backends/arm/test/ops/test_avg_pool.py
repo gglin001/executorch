@@ -5,18 +5,21 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import logging
 import unittest
 
 from typing import Tuple
 
 import torch
+from executorch.backends.arm.quantizer.arm_quantizer import (
+    ArmQuantizer,
+    get_symmetric_quantization_config,
+)
 from executorch.backends.arm.test import common
 from executorch.backends.arm.test.tester.arm_tester import ArmTester
+from executorch.backends.xnnpack.test.tester.tester import Quantize
+from executorch.exir.backend.backend_details import CompileSpec
 from parameterized import parameterized
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 test_data_suite = [
     # (test_name, test_data, [kernel_size, stride, padding])
@@ -28,6 +31,8 @@ test_data_suite = [
 
 
 class TestAvgPool2d(unittest.TestCase):
+    """Tests AvgPool2d."""
+
     class AvgPool2d(torch.nn.Module):
         def __init__(
             self,
@@ -46,10 +51,10 @@ class TestAvgPool2d(unittest.TestCase):
     def _test_avgpool2d_tosa_MI_pipeline(
         self, module: torch.nn.Module, test_data: Tuple[torch.tensor]
     ):
-        tester = (
+        (
             ArmTester(
                 module,
-                inputs=test_data,
+                example_inputs=test_data,
                 compile_spec=common.get_tosa_compile_spec(permute_memory_to_nhwc=True),
             )
             .export()
@@ -60,24 +65,20 @@ class TestAvgPool2d(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_avg_pool2d_default"])
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .to_executorch()
+            .run_method_and_compare_outputs(inputs=test_data)
         )
-        if common.TOSA_REF_MODEL_INSTALLED:
-            tester.run_method_and_compare_outputs()
-        else:
-            logger.warning(
-                "TOSA ref model tool not installed, skip numerical correctness tests"
-            )
 
     def _test_avgpool2d_tosa_BI_pipeline(
         self, module: torch.nn.Module, test_data: Tuple[torch.tensor]
     ):
-        tester = (
+        quantizer = ArmQuantizer().set_io(get_symmetric_quantization_config())
+        (
             ArmTester(
                 module,
-                inputs=test_data,
+                example_inputs=test_data,
                 compile_spec=common.get_tosa_compile_spec(permute_memory_to_nhwc=True),
             )
-            .quantize()
+            .quantize(Quantize(quantizer, get_symmetric_quantization_config()))
             .export()
             .check_count({"torch.ops.aten.avg_pool2d.default": 1})
             .check(["torch.ops.quantized_decomposed"])
@@ -86,24 +87,23 @@ class TestAvgPool2d(unittest.TestCase):
             .check_not(["executorch_exir_dialects_edge__ops_aten_avg_pool2d_default"])
             .check_count({"torch.ops.higher_order.executorch_call_delegate": 1})
             .to_executorch()
+            .run_method_and_compare_outputs(inputs=test_data, qtol=1)
         )
-        if common.TOSA_REF_MODEL_INSTALLED:
-            tester.run_method_and_compare_outputs(qtol=1)
-        else:
-            logger.warning(
-                "TOSA ref model tool not installed, skip numerical correctness tests"
-            )
 
-    def _test_avgpool2d_tosa_u55_BI_pipeline(
-        self, module: torch.nn.Module, test_data: Tuple[torch.tensor]
+    def _test_avgpool2d_tosa_ethos_BI_pipeline(
+        self,
+        module: torch.nn.Module,
+        compile_spec: CompileSpec,
+        test_data: Tuple[torch.tensor],
     ):
+        quantizer = ArmQuantizer().set_io(get_symmetric_quantization_config())
         (
             ArmTester(
                 module,
-                inputs=test_data,
-                compile_spec=common.get_u55_compile_spec(permute_memory_to_nhwc=True),
+                example_inputs=test_data,
+                compile_spec=compile_spec,
             )
-            .quantize()
+            .quantize(Quantize(quantizer, get_symmetric_quantization_config()))
             .export()
             .check_count({"torch.ops.aten.avg_pool2d.default": 1})
             .check(["torch.ops.quantized_decomposed"])
@@ -125,10 +125,7 @@ class TestAvgPool2d(unittest.TestCase):
             self.AvgPool2d(*model_params), (test_data,)
         )
 
-    # Expected to fail since ArmQuantizer cannot quantize a AvgPool2D layer
-    # TODO(MLETORCH-93)
     @parameterized.expand(test_data_suite)
-    @unittest.expectedFailure
     def test_avgpool2d_tosa_BI(
         self,
         test_name: str,
@@ -139,20 +136,28 @@ class TestAvgPool2d(unittest.TestCase):
             self.AvgPool2d(*model_params), (test_data,)
         )
 
-    # Expected to fail since ArmQuantizer cannot quantize a AvgPool2D layer
-    # TODO(MLETORCH-93)
     @parameterized.expand(test_data_suite)
-    @unittest.skipIf(
-        not common.VELA_INSTALLED,
-        "There is no point in running U55 tests if the Vela tool is not installed",
-    )
-    @unittest.expectedFailure
     def test_avgpool2d_tosa_u55_BI(
         self,
         test_name: str,
         test_data: torch.Tensor,
         model_params: int | Tuple[int, int],
     ):
-        self._test_avgpool2d_tosa_u55_BI_pipeline(
-            self.AvgPool2d(*model_params), (test_data,)
+        self._test_avgpool2d_tosa_ethos_BI_pipeline(
+            self.AvgPool2d(*model_params),
+            common.get_u55_compile_spec(permute_memory_to_nhwc=True),
+            (test_data,),
+        )
+
+    @parameterized.expand(test_data_suite)
+    def test_avgpool2d_tosa_u85_BI(
+        self,
+        test_name: str,
+        test_data: torch.Tensor,
+        model_params: int | Tuple[int, int],
+    ):
+        self._test_avgpool2d_tosa_ethos_BI_pipeline(
+            self.AvgPool2d(*model_params),
+            common.get_u85_compile_spec(permute_memory_to_nhwc=True),
+            (test_data,),
         )

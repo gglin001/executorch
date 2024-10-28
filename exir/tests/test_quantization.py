@@ -48,17 +48,17 @@ class TestQuantization(unittest.TestCase):
         with override_quantized_engine("qnnpack"):
             torch.backends.quantized.engine = "qnnpack"
             example_inputs = (torch.randn(1, 3, 224, 224),)
-            m = torchvision.models.resnet18().eval()  # pyre-ignore[16]
+            m = torchvision.models.resnet18().eval()
             m_copy = copy.deepcopy(m)
             # program capture
-            m = torch._export.capture_pre_autograd_graph(
+            m = torch.export.export_for_training(
                 m, copy.deepcopy(example_inputs)
-            )
+            ).module()
 
             quantizer = XNNPACKQuantizer()
             operator_config = get_symmetric_quantization_config(is_per_channel=True)
             quantizer.set_global(operator_config)
-            m = prepare_pt2e(m, quantizer)
+            m = prepare_pt2e(m, quantizer)  # pyre-fixme[6]
             self.assertEqual(
                 id(m.activation_post_process_3), id(m.activation_post_process_2)
             )

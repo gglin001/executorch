@@ -24,6 +24,7 @@ def define_common_targets():
         # Only should be depended on by kernel_types:kernel_types, but various suffixes like Android and Static
         # mean I cant just expose visibility to a single rule.
         visibility = [
+            "//executorch/backends/...",
             "//executorch/runtime/core/exec_aten/...",
             "//executorch/runtime/core/portable_type/test/...",
         ],
@@ -42,6 +43,7 @@ def define_common_targets():
         name = "scalar_type",
         exported_headers = [
             "bfloat16.h",
+            "bfloat16_math.h",
             "complex.h",
             "half.h",
             "scalar_type.h",
@@ -49,6 +51,7 @@ def define_common_targets():
             "bits_types.h",
         ],
         visibility = [
+            "//executorch/extension/...",
             "//executorch/runtime/core/exec_aten/util/...",
             "//executorch/kernels/...",
         ],
